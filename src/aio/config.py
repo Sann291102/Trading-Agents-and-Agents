@@ -14,10 +14,19 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
 
-    # "anthropic" (default, real Claude calls) or "demo" (deterministic
-    # canned responses -- see llm/demo_client.py). Lets the real event
-    # pipeline / frontend be verified end-to-end without a paid API key;
-    # production deployments should leave this at "anthropic".
+    # NVIDIA's OpenAI-compatible hosted inference API (build.nvidia.com) --
+    # a second real provider, used when llm_provider == "nvidia". Handy as a
+    # free-tier alternative to cut Anthropic spend during development; see
+    # llm/nvidia_client.py.
+    nvidia_api_key: str = ""
+    nvidia_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+
+    # "anthropic" (default, real Claude calls), "nvidia" (real calls against
+    # NVIDIA's hosted API, see above), or "demo" (deterministic canned
+    # responses -- see llm/demo_client.py). Lets the real event pipeline /
+    # frontend be verified end-to-end without a paid API key; production
+    # deployments should leave this at "anthropic".
     llm_provider: str = "anthropic"
 
     database_url: str = "postgresql+psycopg2://aio:aio@localhost:5432/aio"
