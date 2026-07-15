@@ -115,6 +115,13 @@ export function CommandPalette() {
       keywords: ["knowledge", "memory graph"],
       action: { kind: "navigate", path: "/knowledge" },
     });
+    list.push({
+      id: "nav-brain",
+      label: "Switch to The Brain",
+      group: "Navigate",
+      keywords: ["brain", "chat", "ask", "memory"],
+      action: { kind: "navigate", path: "/brain" },
+    });
 
     for (const department of DEPARTMENTS) {
       list.push({

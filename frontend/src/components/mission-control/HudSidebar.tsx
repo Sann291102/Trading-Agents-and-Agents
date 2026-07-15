@@ -55,6 +55,9 @@ export function HudSidebar() {
       <SidebarLink href="/knowledge" label="Knowledge Universe" active={pathname === "/knowledge"}>
         <GraphIcon />
       </SidebarLink>
+      <SidebarLink href="/brain" label="The Brain" active={pathname === "/brain"}>
+        <BrainIcon />
+      </SidebarLink>
 
       <div className="my-2 h-px w-8 bg-border" aria-hidden="true" />
 
@@ -137,6 +140,16 @@ function GraphIcon() {
       <circle cx="5" cy="19" r="2" />
       <circle cx="19" cy="19" r="2" />
       <path d="M12 7v6M12 13l-5.5 4M12 13l5.5 4" />
+    </svg>
+  );
+}
+
+function BrainIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-1.5 5.6A3 3 0 0 0 6 18a3 3 0 0 0 3 3" />
+      <path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 1.5 5.6A3 3 0 0 1 18 18a3 3 0 0 1-3 3" />
+      <path d="M9 4v14M15 4v14" />
     </svg>
   );
 }

@@ -165,6 +165,39 @@ def test_create_project_end_to_end_via_http_with_demo_llm(tmp_path):
         del app.state.memory
 
 
+def test_chat_endpoint_grounds_the_reply_in_semantic_memory_search(monkeypatch):
+    semantic = SemanticMemory(location=":memory:", collection="test_chat")
+    semantic.init_collection()
+    semantic.upsert_project(
+        project_id="p1",
+        goal="Launch a clinic scheduling tool",
+        summary="A scheduling add-on for small clinics.",
+    )
+    app.state.semantic = semantic
+
+    seen_user_prompt = {}
+
+    class FakeChatLLM:
+        def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
+            seen_user_prompt["value"] = user
+            return "We recently built a clinic scheduling tool."
+
+    import aio.api.main as main_module
+
+    monkeypatch.setattr(main_module, "build_default_llm", lambda: FakeChatLLM())
+
+    try:
+        response = _client().post("/chat", json={"message": "what have you built recently?"})
+        assert response.status_code == 200
+        assert response.json()["reply"] == "We recently built a clinic scheduling tool."
+        # The retrieved project's goal/summary must actually reach the LLM
+        # call -- proves this is grounded in real search results, not just
+        # forwarding the raw question.
+        assert "Launch a clinic scheduling tool" in seen_user_prompt["value"]
+    finally:
+        del app.state.semantic
+
+
 def test_list_project_files_returns_404_for_a_project_with_no_generated_files():
     response = _client().get("/projects/no-such-project/files")
     assert response.status_code == 404

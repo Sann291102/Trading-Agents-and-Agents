@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from aio.agents.registry import agent_status_tracker, all_agent_classes
 from aio.config import settings
 from aio.events.bus import event_bus
+from aio.llm import build_default_llm
 from aio.memory.long_term import LongTermMemory
 from aio.memory.semantic import SemanticMemory
 from aio.memory.service import MemoryService
@@ -306,3 +307,44 @@ def list_execution_logs(limit: int = 100) -> list[dict]:
         }
         for log in logs
     ]
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+_CHAT_SYSTEM_PROMPT = (
+    "You are the memory assistant for an AI software organization. Answer "
+    "the operator's question briefly, using only the organizational memory "
+    "context provided below -- do not invent projects or facts not present "
+    "in it. If the question asks you to build, code, implement, or design "
+    "something, do not attempt it: tell the operator to use \"Start "
+    "Project\" instead, since that runs the full multi-agent research/"
+    "product/engineering pipeline this chat does not have access to."
+)
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest) -> ChatResponse:
+    """The Brain page's casual-question path: one direct LLM call grounded
+    in real semantic-memory search results, not the 11-node mission graph.
+    Reuses the exact same `search_similar` GET /projects/search already
+    calls -- the "brain" here is real data (past projects' goals/summaries),
+    not a fabricated always-on background process."""
+    hits = app.state.semantic.search_similar(request.message, top_k=5)
+    context = (
+        "\n".join(f"- {hit['goal']}: {hit['summary']}" for hit in hits if hit.get("summary"))
+        or "No related past projects found in memory."
+    )
+    llm = build_default_llm()
+    reply = llm.complete(
+        system=_CHAT_SYSTEM_PROMPT,
+        user=f"Organizational memory (most relevant past projects):\n{context}\n\n"
+        f"Operator question: {request.message}",
+        max_tokens=1024,
+    )
+    return ChatResponse(reply=reply)

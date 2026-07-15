@@ -115,3 +115,22 @@ export function cancelProject(projectId: string) {
     method: "POST",
   });
 }
+
+export interface ChatResponse {
+  reply: string;
+}
+
+/**
+ * The Brain page's casual-question path -- one direct LLM call grounded in
+ * real semantic-memory search results (see aio/api/main.py's `chat`
+ * endpoint), not the full multi-agent mission graph. For quick questions
+ * only; the backend's own system prompt redirects anything that actually
+ * needs building back to `startProject`.
+ */
+export function askBrain(message: string) {
+  return fetchJSON<ChatResponse>("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+}
