@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aio
+      POSTGRES_PASSWORD: aio
+      POSTGRES_DB: aio
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aio"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Long-term + semantic memory both live in this one database -- no
+      # separate vector-DB service anymore (see memory/semantic.py).
+      DATABASE_URL: postgresql+psycopg2://aio:aio@postgres:5432/aio
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

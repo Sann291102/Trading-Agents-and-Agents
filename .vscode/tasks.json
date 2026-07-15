@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "AIO: API (port 8000)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/uvicorn",
+      "args": [
+        "aio.api.main:app",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--app-dir", "${workspaceFolder}/src"
+      ],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated", "group": "aio" }
+    },
+    {
+      "label": "AIO: Frontend (port 3000)",
+      "type": "shell",
+      "command": "${workspaceFolder}/frontend/run-dev.sh",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated", "group": "aio" }
+    },
+    {
+      "label": "Run AI Organization",
+      "dependsOn": ["AIO: API (port 8000)", "AIO: Frontend (port 3000)"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "runOptions": { "runOn": "default" },
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "AIO: Open dashboard in browser",
+      "type": "shell",
+      "command": "open",
+      "args": ["http://localhost:3000"],
+      "problemMatcher": []
+    }
+  ]
+}

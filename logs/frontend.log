@@ -1,0 +1,13 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.10 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.7:3000
+- Environments: .env.local
+✓ Ready in 1475ms
+
+ GET / 200 in 568ms (next.js: 324ms, application-code: 243ms)
+ GET / 200 in 158ms (next.js: 25ms, application-code: 133ms)
+[browser] THREE.Clock: This module has been deprecated. Please use THREE.Timer instead.

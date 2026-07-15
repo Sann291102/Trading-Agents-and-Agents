@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(chmod +x \"/Users/vivek/Desktop/Organization Setup/scripts/run_dev.sh\")",
+      "Bash(cd \"/Users/vivek/Desktop/Organization Setup\" && pwd && ls -ld . .. \"/Users/vivek/Desktop\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8000/openapi.json)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(list\\(d['paths'].keys\\(\\)\\)\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/projects -H \"Content-Type: application/json\" -d '{\"goal\": \"Launch a customer feedback widget\"}' -w \"\\\\nHTTP %{http_code}\\\\n\")",
+      "Bash(tail -20 /tmp/aio-preview.log)",
+      "Bash(curl -s http://localhost:8000/projects/search?q=feedback)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s \"http://localhost:8000/projects/search?q=feedback\" -w \"\\\\nHTTP %{http_code}\\\\n\")",
+      "Bash(curl -s \"http://localhost:8000/projects/nonexistent-id\" -w \"\\\\nHTTP %{http_code}\\\\n\")",
+      "Bash(pkill -f \"uvicorn aio.api.main:app\")",
+      "Bash(pkill -f \"uvicorn aio.api.main:app\" 2>/dev/null; ls -la \"/Users/vivek/ai-organization\" 2>&1 | head -5; echo \"---\"; df -P \"/Users/vivek/Desktop/Organization Setup\" \"/Users/vivek\" | tail -2)",
+      "Bash(mv \"/Users/vivek/Desktop/Organization Setup\" \"/Users/vivek/ai-organization\" && ls -la \"/Users/vivek/ai-organization\" | head -20)"
+    ]
+  }
+}

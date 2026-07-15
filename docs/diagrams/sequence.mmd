@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Client
+    participant API as FastAPI Gateway
+    participant CEO as Executive AI
+    participant RC as Research Coordinator
+    participant DE as Domain Expert
+    participant MR as Market Research
+    participant CI as Competitor Intelligence
+    participant TR as Technical Research
+    participant PM as Product Manager
+    participant BL as Backend Lead
+    participant LTM as Long-Term Memory
+    participant SEM as Semantic Memory
+
+    Client->>API: POST /projects {goal}
+    API->>CEO: plan(goal)
+    CEO-->>API: ceo_plan
+
+    API->>RC: plan(goal)
+    RC-->>API: research_plan (objectives per specialist)
+
+    par Parallel research
+        API->>DE: execute(goal)
+        DE-->>API: DomainKnowledgeReport
+    and
+        API->>MR: execute(goal)
+        MR-->>API: MarketResearchReport
+    and
+        API->>CI: execute(goal)
+        CI-->>API: CompetitorMatrix
+    and
+        API->>TR: execute(goal)
+        TR-->>API: TechnicalResearchReport
+    end
+
+    API->>RC: execute(goal, domain, market, competitor, technical)
+    RC-->>API: ResearchReport (deduped, conflicts surfaced)
+
+    API->>CEO: review_research(goal, research_report)
+    CEO-->>API: APPROVE / CHANGES
+
+    Note over API,PM: Product Manager only runs after research is merged and reviewed
+
+    API->>PM: execute(goal, research_report)
+    PM-->>API: BusinessRequirementsDocument
+
+    API->>BL: plan_implementation(business_requirements)
+    BL-->>API: tech_plan
+
+    API->>CEO: review(goal, requirements_summary, tech_plan)
+    CEO-->>API: APPROVE / CHANGES
+
+    API->>LTM: save_project(...) + save_execution_log(...) per agent call
+    API->>SEM: upsert_project(project_id, goal, research_summary)
+
+    API-->>Client: ProjectResponse (research_report, business_requirements, tech_plan, review)

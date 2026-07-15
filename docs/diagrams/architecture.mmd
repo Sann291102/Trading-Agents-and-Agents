@@ -1,0 +1,56 @@
+flowchart TD
+    Client[Client / API caller] -->|POST /projects goal| API[FastAPI Gateway]
+
+    subgraph Orchestration["LangGraph StateGraph"]
+        CEOPlan[CEO: plan]
+        ResearchPlan[Research Coordinator: plan]
+
+        subgraph Parallel["Parallel research (fan-out / fan-in)"]
+            Domain[Domain Expert: execute]
+            Market[Market Research: execute]
+            Competitor[Competitor Intelligence: execute]
+            Technical[Technical Research: execute]
+        end
+
+        ResearchMerge[Research Coordinator: execute merge]
+        CEOResearchReview[CEO: review_research]
+        Product[Product Manager: execute]
+        Backend[Backend Lead: plan_implementation]
+        CEOReview[CEO: review]
+
+        CEOPlan --> ResearchPlan
+        ResearchPlan --> Domain
+        ResearchPlan --> Market
+        ResearchPlan --> Competitor
+        ResearchPlan --> Technical
+        Domain --> ResearchMerge
+        Market --> ResearchMerge
+        Competitor --> ResearchMerge
+        Technical --> ResearchMerge
+        ResearchMerge --> CEOResearchReview
+        CEOResearchReview --> Product
+        Product --> Backend
+        Backend --> CEOReview
+    end
+
+    API --> CEOPlan
+    CEOReview --> API
+
+    CEOPlan -. calls .-> LLM[Anthropic Claude API]
+    ResearchPlan -. calls .-> LLM
+    Domain -. calls .-> LLM
+    Market -. calls .-> LLM
+    Competitor -. calls .-> LLM
+    Technical -. calls .-> LLM
+    ResearchMerge -. calls .-> LLM
+    CEOResearchReview -. calls .-> LLM
+    Product -. calls .-> LLM
+    Backend -. calls .-> LLM
+    CEOReview -. calls .-> LLM
+
+    CEOReview --> LTM[(Long-Term Memory\nPostgres: projects, execution_logs)]
+    CEOReview --> SEM[(Semantic Memory\nSQL vector search: embeddings)]
+
+    API -->|GET /projects/:id| LTM
+    API -->|GET /projects/search| SEM
+    API -->|GET /execution-logs| LTM

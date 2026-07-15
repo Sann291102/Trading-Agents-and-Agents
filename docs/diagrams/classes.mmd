@@ -1,0 +1,117 @@
+classDiagram
+    class Agent {
+        +str role
+        +str system_prompt
+        +type input_schema
+        +type output_schema
+        +run(task) str
+        +run_logged(task) tuple~str, ExecutionMetrics~
+        +plan(*args) Any
+        +execute(*args) Any
+        +review(*args) Any
+        +handoff(*args) Any
+    }
+
+    class ExecutiveAgent {
+        +plan(goal) str
+        +review_research(goal, research_report) str
+        +review(goal, requirements, tech_plan) str
+    }
+    class ResearchCoordinatorAgent {
+        +plan(goal) str
+        +execute(goal, domain, market, competitor, technical) ResearchReport
+        +review(report) str
+        +handoff(report) dict
+    }
+    class DomainExpertAgent {
+        +execute(goal) DomainKnowledgeReport
+    }
+    class MarketResearchAgent {
+        +execute(goal) MarketResearchReport
+    }
+    class CompetitorIntelligenceAgent {
+        +execute(goal) CompetitorMatrix
+    }
+    class TechnicalResearchAgent {
+        +execute(goal) TechnicalResearchReport
+    }
+    class ProductManagerAgent {
+        +plan(goal, research_report) str
+        +execute(goal, research_report) BusinessRequirementsDocument
+        +review(brd) str
+        +handoff(brd) dict
+    }
+    class BackendLeadAgent {
+        +plan_implementation(requirements) str
+    }
+
+    Agent <|-- ExecutiveAgent
+    Agent <|-- ResearchCoordinatorAgent
+    Agent <|-- DomainExpertAgent
+    Agent <|-- MarketResearchAgent
+    Agent <|-- CompetitorIntelligenceAgent
+    Agent <|-- TechnicalResearchAgent
+    Agent <|-- ProductManagerAgent
+    Agent <|-- BackendLeadAgent
+
+    class ResearchReport {
+        +str executive_summary
+        +list~str~ opportunities
+        +list~str~ risks
+        +list~str~ assumptions
+        +str recommended_direction
+        +list~str~ supporting_evidence
+        +float confidence
+        +DomainKnowledgeReport domain
+        +MarketResearchReport market
+        +CompetitorMatrix competitor
+        +TechnicalResearchReport technical
+        +from_synthesis(synthesis, domain, market, competitor, technical)$ ResearchReport
+    }
+    class DomainKnowledgeReport {
+        +str industry
+        +list~str~ terminology
+        +list~str~ compliance_concerns
+        +list~str~ domain_risks
+        +float confidence
+    }
+    class MarketResearchReport {
+        +list~str~ target_users
+        +list~str~ existing_products
+        +str market_size_estimate
+        +float confidence
+    }
+    class CompetitorMatrix {
+        +list~CompetitorProfile~ competitors
+        +SWOTAnalysis swot
+        +list~FeatureGap~ feature_gaps
+        +float confidence
+    }
+    class TechnicalResearchReport {
+        +list~str~ frameworks
+        +list~str~ cloud_services
+        +list~str~ architecture_patterns
+        +float confidence
+    }
+    class BusinessRequirementsDocument {
+        +ProductVision vision
+        +list~Epic~ epics
+        +list~ReleasePhase~ release_roadmap
+        +list~str~ sprint_suggestions
+        +list~Risk~ risk_register
+        +list~SuccessMetric~ success_metrics
+        +float confidence
+    }
+
+    ResearchCoordinatorAgent ..> ResearchReport : produces
+    DomainExpertAgent ..> DomainKnowledgeReport : produces
+    MarketResearchAgent ..> MarketResearchReport : produces
+    CompetitorIntelligenceAgent ..> CompetitorMatrix : produces
+    TechnicalResearchAgent ..> TechnicalResearchReport : produces
+    ProductManagerAgent ..> BusinessRequirementsDocument : produces
+    ResearchReport *-- DomainKnowledgeReport
+    ResearchReport *-- MarketResearchReport
+    ResearchReport *-- CompetitorMatrix
+    ResearchReport *-- TechnicalResearchReport
+    ProductManagerAgent ..> ResearchReport : consumes
+    BackendLeadAgent ..> BusinessRequirementsDocument : consumes
