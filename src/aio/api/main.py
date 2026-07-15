@@ -124,12 +124,19 @@ def _resolve_preview_dir(project_id: str):
     return _resolve_preview_path(settings.preview_workspace_dir) / project_id
 
 
+_PROVIDER_MODEL = {
+    "anthropic": lambda: settings.anthropic_model,
+    "nvidia": lambda: settings.nvidia_model,
+}
+
+
 @app.get("/health")
 def health() -> dict:
+    model_for = _PROVIDER_MODEL.get(settings.llm_provider)
     return {
         "status": "ok",
         "llm_provider": settings.llm_provider,
-        "model": settings.anthropic_model if settings.llm_provider == "anthropic" else "demo",
+        "model": model_for() if model_for else "demo",
     }
 
 
