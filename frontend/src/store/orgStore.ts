@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { clearAuthCookie, readAuthCookie, writeAuthCookie } from "@/lib/authCookie";
 import type { AgentInfo, AgentStatusValue, OrgEvent } from "@/types";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
@@ -51,6 +52,14 @@ interface OrgState {
    * mission), so PreviewPanel only shows a "building" state once the
    * mission has actually reached the preview step. */
   previewBuilding: boolean;
+  /** Session bearer token -- mirrored into a cookie (see lib/authCookie.ts)
+   * so middleware.ts's Edge runtime can read it too, since it has no access
+   * to this client-side store. `fetchJSON` (lib/api.ts) reads this via
+   * `useOrgStore.getState().token` to attach `Authorization: Bearer` to
+   * every API call. Initialized from the cookie, not null, so a page
+   * reload while already logged in doesn't send the first render's data
+   * fetches out unauthenticated. */
+  token: string | null;
 
   setAgents: (agents: AgentInfo[]) => void;
   applyEvent: (event: OrgEvent) => void;
@@ -58,6 +67,7 @@ interface OrgState {
   setConnectionStatus: (status: ConnectionStatus) => void;
   setActiveDepartment: (department: string | null) => void;
   setPreview: (url: string | null, error: string | null) => void;
+  setToken: (token: string | null) => void;
 }
 
 function statusFromFinishedEvent(event: OrgEvent): AgentStatusValue {
@@ -75,6 +85,7 @@ export const useOrgStore = create<OrgState>((set) => ({
   previewUrl: null,
   previewError: null,
   previewBuilding: false,
+  token: readAuthCookie(),
 
   setAgents: (agents) =>
     set({ agents: Object.fromEntries(agents.map((agent) => [agent.role, agent])) }),
@@ -155,4 +166,9 @@ export const useOrgStore = create<OrgState>((set) => ({
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setActiveDepartment: (department) => set({ activeDepartment: department }),
   setPreview: (url, error) => set({ previewUrl: url, previewError: error }),
+  setToken: (token) => {
+    if (token) writeAuthCookie(token);
+    else clearAuthCookie();
+    set({ token });
+  },
 }));

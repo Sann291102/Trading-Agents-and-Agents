@@ -1,15 +1,28 @@
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from aio.agents.registry import all_agent_classes
-from aio.api.main import app
+from aio.api.main import app, get_current_user
 from aio.config import settings
 from aio.memory.long_term import LongTermMemory
 from aio.memory.semantic import SemanticMemory
 from aio.memory.service import MemoryService
 
 VALID_STATUSES = {"idle", "executing", "completed", "needs_review"}
+
+
+@pytest.fixture(autouse=True)
+def _bypass_auth():
+    """This file exercises the operator-facing endpoints' own behavior, not
+    the auth layer -- see test_auth.py for signup/login/token enforcement.
+    FastAPI's dependency_overrides is the standard way to swap out a
+    dependency in tests; the override just needs to satisfy the `User`
+    parameter's presence, nothing here reads its fields."""
+    app.dependency_overrides[get_current_user] = lambda: object()
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_projects_search_route_is_registered_before_project_id_route():

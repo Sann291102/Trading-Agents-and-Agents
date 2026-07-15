@@ -1,8 +1,10 @@
 """API gateway for the AI Organization vertical slice.
 
-A single FastAPI service standing in for the full platform's API gateway +
-auth/RBAC layer (not implemented in this slice -- see ARCHITECTURE.md for
-the roadmap). It exposes the one workflow this slice supports: hand the
+A single FastAPI service standing in for the full platform's API gateway.
+Basic username/password auth now gates most of it (see auth/service.py) --
+full RBAC/multi-department authorization is still a roadmap item (see
+ARCHITECTURE.md), but every operator-facing endpoint below requires a valid
+session. It exposes the one workflow this slice supports: hand the
 organization a goal, get back what Research, Product, and Engineering
 produced -- research is now a mandatory stage before Product acts.
 """
@@ -16,13 +18,15 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
 from aio.agents.registry import agent_status_tracker, all_agent_classes
+from aio.auth import AuthService, InvalidCredentials, UsernameTaken
 from aio.config import settings
+from aio.db.models import User
 from aio.events.bus import event_bus
 from aio.llm import build_default_llm
 from aio.memory.long_term import LongTermMemory
@@ -50,9 +54,12 @@ async def lifespan(app: FastAPI):
     semantic.init_collection()
     memory = MemoryService()
     memory.init_schema()
+    auth = AuthService()
+    auth.init_schema()
     app.state.long_term = long_term
     app.state.semantic = semantic
     app.state.memory = memory
+    app.state.auth = auth
     # Every OrgEvent published anywhere in the process (agents, graph
     # nodes, memory writes) must reach SSE subscribers on *this* loop --
     # see events/bus.py's module docstring for why this bind is required.
@@ -126,8 +133,65 @@ def health() -> dict:
     }
 
 
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+
+
+_MIN_PASSWORD_LENGTH = 8
+
+
+@app.post("/auth/signup", response_model=AuthResponse, status_code=201)
+def signup(request: SignupRequest) -> AuthResponse:
+    username = request.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="username is required")
+    if len(request.password) < _MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400, detail=f"password must be at least {_MIN_PASSWORD_LENGTH} characters"
+        )
+    try:
+        token = app.state.auth.signup(username, request.password)
+    except UsernameTaken:
+        raise HTTPException(status_code=409, detail="username already taken") from None
+    return AuthResponse(token=token)
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login(request: LoginRequest) -> AuthResponse:
+    try:
+        token = app.state.auth.login(request.username.strip(), request.password)
+    except InvalidCredentials:
+        raise HTTPException(status_code=401, detail="invalid username or password") from None
+    return AuthResponse(token=token)
+
+
+def get_current_user(authorization: str = Header(default="")) -> User:
+    """FastAPI dependency gating every operator-facing endpoint below.
+    Deliberately not applied to /health (frontend liveness check, no
+    sensitive data) or /events/stream -- the browser's native EventSource
+    cannot attach custom headers, so that stream stays unauthenticated, same
+    trust level as /health (read-only mission telemetry, no secrets)."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    user = app.state.auth.get_user_for_token(token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    return user
+
+
 @app.get("/agents")
-def list_agents() -> list[dict]:
+def list_agents(user: User = Depends(get_current_user)) -> list[dict]:
     """Every implemented agent plus its live status, derived only from real
     agent_started/agent_finished events (see agents/registry.py). Adding a
     new department/agent requires no change here -- it appears the moment
@@ -191,7 +255,9 @@ def _run_mission_in_background(goal: str, project_id: str) -> None:
 
 
 @app.post("/projects", response_model=StartProjectResponse, status_code=202)
-def create_project(request: GoalRequest) -> StartProjectResponse:
+def create_project(
+    request: GoalRequest, user: User = Depends(get_current_user)
+) -> StartProjectResponse:
     """Kicks off the mission on a background thread and returns its
     project_id immediately -- a real run is a dozen-plus sequential/parallel
     LLM calls, too long to hold the HTTP connection open for, and the
@@ -211,14 +277,14 @@ def create_project(request: GoalRequest) -> StartProjectResponse:
 
 
 @app.post("/projects/{project_id}/cancel")
-def cancel_project(project_id: str) -> dict:
+def cancel_project(project_id: str, user: User = Depends(get_current_user)) -> dict:
     if not cancellation.request_cancel(project_id):
         raise HTTPException(status_code=404, detail="no running mission with that id")
     return {"status": "cancel_requested"}
 
 
 @app.get("/projects")
-def list_projects(limit: int = 50) -> list[dict]:
+def list_projects(limit: int = 50, user: User = Depends(get_current_user)) -> list[dict]:
     """Lightweight project list for the Knowledge Universe view -- full
     research/BRD payloads are fetched per-project via GET /projects/{id}
     once a node is selected, not eagerly for every project in the list."""
@@ -236,12 +302,14 @@ def list_projects(limit: int = 50) -> list[dict]:
 
 
 @app.get("/projects/search")
-def search_projects(q: str, top_k: int = 5) -> list[dict]:
+def search_projects(
+    q: str, top_k: int = 5, user: User = Depends(get_current_user)
+) -> list[dict]:
     return app.state.semantic.search_similar(q, top_k=top_k)
 
 
 @app.get("/projects/{project_id}", response_model=ProjectResponse)
-def get_project(project_id: str) -> ProjectResponse:
+def get_project(project_id: str, user: User = Depends(get_current_user)) -> ProjectResponse:
     project = app.state.long_term.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
@@ -264,7 +332,7 @@ def get_project(project_id: str) -> ProjectResponse:
 
 
 @app.get("/projects/{project_id}/files")
-def list_project_files(project_id: str) -> list[str]:
+def list_project_files(project_id: str, user: User = Depends(get_current_user)) -> list[str]:
     """Where a mission's generated code actually lands on disk -- there's no
     DB manifest table (the files themselves are the record, and they persist
     on disk after the preview server stops -- see preview/manager.py), so
@@ -280,7 +348,7 @@ def list_project_files(project_id: str) -> list[str]:
 
 
 @app.get("/memory-entries")
-def list_memory_entries(limit: int = 50) -> list[dict]:
+def list_memory_entries(limit: int = 50, user: User = Depends(get_current_user)) -> list[dict]:
     """Durable organizational memory: research findings, risks, and (later)
     architectural decisions recorded per run -- see memory/recording.py and
     ARCHITECTURE.md roadmap item #4. List-only, matching MemoryService's
@@ -290,7 +358,7 @@ def list_memory_entries(limit: int = 50) -> list[dict]:
 
 
 @app.get("/execution-logs")
-def list_execution_logs(limit: int = 100) -> list[dict]:
+def list_execution_logs(limit: int = 100, user: User = Depends(get_current_user)) -> list[dict]:
     logs = app.state.long_term.list_execution_logs(limit=limit)
     return [
         {
@@ -329,7 +397,7 @@ _CHAT_SYSTEM_PROMPT = (
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, user: User = Depends(get_current_user)) -> ChatResponse:
     """The Brain page's casual-question path: one direct LLM call grounded
     in real semantic-memory search results, not the 11-node mission graph.
     Reuses the exact same `search_similar` GET /projects/search already

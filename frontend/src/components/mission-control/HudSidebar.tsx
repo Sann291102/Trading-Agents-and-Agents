@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import { DEPARTMENTS } from "@/lib/orgTopology";
 import { useOrgStore } from "@/store/orgStore";
@@ -34,7 +34,13 @@ function openCommandPalette() {
  */
 export function HudSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const connectionStatus = useOrgStore((state) => state.connectionStatus);
+
+  function handleLogout() {
+    useOrgStore.getState().setToken(null);
+    router.push("/login");
+  }
 
   return (
     <nav
@@ -80,6 +86,16 @@ export function HudSidebar() {
         className="mt-2 flex h-10 w-10 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-raised hover:text-accent-cyan"
       >
         <SearchIcon />
+      </button>
+
+      <button
+        type="button"
+        onClick={handleLogout}
+        aria-label="Log out"
+        title="Log out"
+        className="mt-1 flex h-10 w-10 items-center justify-center rounded text-text-muted transition-colors hover:bg-status-needs-review/10 hover:text-status-needs_review"
+      >
+        <LogoutIcon />
       </button>
 
       <div className="mt-auto flex flex-col items-center gap-1 pt-2">
@@ -150,6 +166,16 @@ function BrainIcon() {
       <path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-1.5 5.6A3 3 0 0 0 6 18a3 3 0 0 0 3 3" />
       <path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 1.5 5.6A3 3 0 0 1 18 18a3 3 0 0 1-3 3" />
       <path d="M9 4v14M15 4v14" />
+    </svg>
+  );
+}
+
+function LogoutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="M16 17l5-5-5-5" />
+      <path d="M21 12H9" />
     </svg>
   );
 }

@@ -130,3 +130,29 @@ class MemoryEntryRecord(Base):
     confidence: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class User(Base):
+    """A signed-up operator. `password_hash` is a bcrypt hash (see
+    auth/service.py) -- the plaintext password is never stored."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    username: Mapped[str] = mapped_column(String, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class SessionToken(Base):
+    """An opaque bearer token (see auth/service.py's `secrets.token_urlsafe`)
+    issued on signup/login. No `default=_uuid` on `token` -- the token
+    itself is always supplied explicitly by AuthService, unlike every other
+    model's `id` column."""
+
+    __tablename__ = "session_tokens"
+
+    token: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

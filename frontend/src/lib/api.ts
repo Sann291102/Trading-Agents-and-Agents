@@ -1,3 +1,4 @@
+import { useOrgStore } from "@/store/orgStore";
 import type {
   AgentInfo,
   ExecutionLogEntry,
@@ -10,7 +11,15 @@ export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, init);
+  // Every operator-facing backend endpoint requires a bearer token (see
+  // aio/api/main.py's get_current_user) except /health and /auth/*, which
+  // ignore this header if present -- so attaching it unconditionally here,
+  // in one place, is simpler than threading auth through every call site.
+  const token = useOrgStore.getState().token;
+  const headers = new Headers(init?.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new Error(`${init?.method ?? "GET"} ${path} failed (${response.status}): ${body}`);
@@ -132,5 +141,25 @@ export function askBrain(message: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),
+  });
+}
+
+export interface AuthResponse {
+  token: string;
+}
+
+export function signup(username: string, password: string) {
+  return fetchJSON<AuthResponse>("/auth/signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function login(username: string, password: string) {
+  return fetchJSON<AuthResponse>("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
   });
 }
