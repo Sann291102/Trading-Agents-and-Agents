@@ -30,6 +30,7 @@ distinct from the finer-grained agent_started/agent_finished events that
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import TypedDict
@@ -67,6 +68,8 @@ from aio.models.research import (
 )
 from aio.models.swarm import SwarmPlan, SwarmTaskResult, SwarmValidation
 from aio.observability.context import current_project_id
+from aio.orchestration import cancellation
+from aio.orchestration.cancellation import MissionCancelled
 from aio.orchestration.swarm import execute_swarm, plan_swarm, validate_swarm
 from aio.preview import preview_manager
 
@@ -306,11 +309,17 @@ def build_graph(
                 state["goal"], state["tech_plan"], state["swarm_results"]
             )
             info = preview_manager.start(state["project_id"], generated_app)
+        except MissionCancelled:
+            # Must propagate, not be folded into "preview unavailable" --
+            # this is the operator stopping the whole mission, not a preview
+            # build failure (see the generic except below).
+            raise
         except Exception as exc:
             _emit(
                 "deployment_finished",
                 department="Engineering",
                 message=f"Live preview unavailable: {_excerpt(str(exc))}",
+                payload={"preview_error": str(exc)},
             )
             return {"preview_error": str(exc)}
 
@@ -319,6 +328,7 @@ def build_graph(
                 "deployment_finished",
                 department="Engineering",
                 message=f"Live preview ready at {info.url}",
+                payload={"preview_url": info.url},
             )
             return {"generated_app": generated_app, "preview_url": info.url}
 
@@ -326,6 +336,7 @@ def build_graph(
             "deployment_finished",
             department="Engineering",
             message=f"Live preview unavailable: {_excerpt(info.error or 'unknown error')}",
+            payload={"preview_error": info.error},
         )
         return {"generated_app": generated_app, "preview_error": info.error}
 
@@ -359,6 +370,7 @@ def run_organization(
     memory: MemoryService | None = None,
     persist: bool = True,
     swarm: bool = True,
+    project_id: str | None = None,
 ) -> OrgState:
     llm = llm or build_default_llm()
     if persist:
@@ -372,9 +384,13 @@ def run_organization(
     # published during the run -- by any agent, on any node -- can carry
     # the correct project_id from its very first "agent_started" onward.
     # See observability/context.py for why this is a contextvar rather than
-    # a parameter threaded through every agent method.
-    project_id = str(uuid.uuid4())
+    # a parameter threaded through every agent method. A caller that already
+    # knows the id it wants (api/main.py -- generated before this function
+    # is even called, so it can hand the id back to the frontend immediately
+    # instead of waiting for the whole mission to finish) can pass it in.
+    project_id = project_id or str(uuid.uuid4())
     token = current_project_id.set(project_id)
+    cancellation.register(project_id)
 
     ceo = ExecutiveAgent(llm, long_term=long_term)
     research_coordinator = ResearchCoordinatorAgent(llm, long_term=long_term)
@@ -410,11 +426,15 @@ def run_organization(
 
     try:
         result: OrgState = app.invoke({"goal": goal, "project_id": project_id})
+    except MissionCancelled:
+        _emit("workflow_cancelled", message="Mission stopped by operator request")
+        raise
     except Exception as exc:
         _emit("workflow_failed", message=_excerpt(f"Workflow failed: {exc}"))
         raise
     finally:
         current_project_id.reset(token)
+        cancellation.clear(project_id)
 
     result["project_id"] = project_id
 
@@ -422,6 +442,9 @@ def run_organization(
         semantic = semantic or SemanticMemory()
         research_report = result.get("research_report")
         business_requirements = result.get("business_requirements")
+        swarm_plan = result.get("swarm_plan")
+        swarm_results = result.get("swarm_results")
+        swarm_validation = result.get("swarm_validation")
         long_term.save_project(
             id=project_id,
             goal=goal,
@@ -434,6 +457,15 @@ def run_organization(
             tech_plan=result.get("tech_plan", ""),
             review=result.get("review", ""),
             approved=result.get("approved", False),
+            swarm_plan_json=swarm_plan.model_dump_json() if swarm_plan else "",
+            swarm_results_json=(
+                json.dumps([r.model_dump(mode="json") for r in swarm_results])
+                if swarm_results
+                else ""
+            ),
+            swarm_validation_json=swarm_validation.model_dump_json() if swarm_validation else "",
+            preview_url=result.get("preview_url", ""),
+            preview_error=result.get("preview_error", ""),
         )
         summary = research_report.executive_summary if research_report else result.get("review", "")
         semantic.upsert_project(project_id=project_id, goal=goal, summary=summary)

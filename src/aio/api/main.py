@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import threading
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -25,12 +28,16 @@ from aio.memory.long_term import LongTermMemory
 from aio.memory.semantic import SemanticMemory
 from aio.memory.service import MemoryService
 from aio.observability.logging_setup import setup_logging
+from aio.orchestration import cancellation
+from aio.orchestration.cancellation import MissionCancelled
 from aio.orchestration.graph import run_organization
 from aio.preview import preview_manager
 
 # At import time, not in lifespan: uvicorn imports this module before
 # serving, and agent/module loggers must be capturing from the first line.
 setup_logging()
+
+logger = logging.getLogger("aio.api.main")
 
 
 @asynccontextmanager
@@ -69,6 +76,10 @@ class GoalRequest(BaseModel):
     goal: str
 
 
+class StartProjectResponse(BaseModel):
+    project_id: str
+
+
 class ProjectResponse(BaseModel):
     id: str
     goal: str
@@ -79,17 +90,20 @@ class ProjectResponse(BaseModel):
     tech_plan: str = ""
     review: str = ""
     approved: bool = False
-    # Engineering-swarm stage (not yet persisted -- populated on the
-    # POST /projects response for the run that just happened).
+    # Engineering-swarm stage.
     swarm_plan: dict | None = None
     swarm_results: list[dict] | None = None
     swarm_validation: dict | None = None
-    # Live-preview stage (also not yet persisted -- see swarm fields above).
+    # Live-preview stage.
     preview_url: str | None = None
     preview_error: str | None = None
 
 
 def _parse_json_field(raw: str) -> dict | None:
+    return json.loads(raw) if raw else None
+
+
+def _parse_json_list_field(raw: str) -> list[dict] | None:
     return json.loads(raw) if raw else None
 
 
@@ -147,42 +161,50 @@ async def stream_events():
         event_bus.unsubscribe(queue)
 
 
-@app.post("/projects", response_model=ProjectResponse)
-def create_project(request: GoalRequest) -> ProjectResponse:
-    result = run_organization(
-        request.goal,
-        long_term=app.state.long_term,
-        semantic=app.state.semantic,
-        memory=app.state.memory,
-    )
-    research_report = result.get("research_report")
-    business_requirements = result.get("business_requirements")
-    return ProjectResponse(
-        id=result["project_id"],
-        goal=request.goal,
-        research_report=research_report.model_dump() if research_report else None,
-        research_review=result.get("research_review", ""),
-        research_approved=result.get("research_approved", False),
-        business_requirements=(
-            business_requirements.model_dump() if business_requirements else None
-        ),
-        tech_plan=result.get("tech_plan", ""),
-        review=result.get("review", ""),
-        approved=result.get("approved", False),
-        swarm_plan=(
-            result["swarm_plan"].model_dump() if result.get("swarm_plan") else None
-        ),
-        swarm_results=(
-            [r.model_dump() for r in result["swarm_results"]]
-            if result.get("swarm_results")
-            else None
-        ),
-        swarm_validation=(
-            result["swarm_validation"].model_dump() if result.get("swarm_validation") else None
-        ),
-        preview_url=result.get("preview_url"),
-        preview_error=result.get("preview_error"),
-    )
+def _run_mission_in_background(goal: str, project_id: str) -> None:
+    try:
+        run_organization(
+            goal,
+            long_term=app.state.long_term,
+            semantic=app.state.semantic,
+            memory=app.state.memory,
+            project_id=project_id,
+        )
+    except MissionCancelled:
+        pass  # run_organization already published workflow_cancelled
+    except Exception:
+        # run_organization already published workflow_failed on the event
+        # bus (the frontend's real signal) -- this is only so the failure
+        # also reaches the server's own logs, since nothing awaits this
+        # thread to see the exception otherwise.
+        logger.exception("mission %s failed", project_id)
+
+
+@app.post("/projects", response_model=StartProjectResponse, status_code=202)
+def create_project(request: GoalRequest) -> StartProjectResponse:
+    """Kicks off the mission on a background thread and returns its
+    project_id immediately -- a real run is a dozen-plus sequential/parallel
+    LLM calls, too long to hold the HTTP connection open for, and the
+    frontend already gets live progress from the SSE stream independent of
+    this response. Registering the cancellation event here (not just inside
+    `run_organization`) means a `POST /projects/{id}/cancel` can never race
+    ahead of the mission actually starting -- see cancellation.register's
+    docstring."""
+    project_id = str(uuid.uuid4())
+    cancellation.register(project_id)
+    threading.Thread(
+        target=_run_mission_in_background,
+        args=(request.goal, project_id),
+        daemon=True,
+    ).start()
+    return StartProjectResponse(project_id=project_id)
+
+
+@app.post("/projects/{project_id}/cancel")
+def cancel_project(project_id: str) -> dict:
+    if not cancellation.request_cancel(project_id):
+        raise HTTPException(status_code=404, detail="no running mission with that id")
+    return {"status": "cancel_requested"}
 
 
 @app.get("/projects")
@@ -223,6 +245,11 @@ def get_project(project_id: str) -> ProjectResponse:
         tech_plan=project.tech_plan,
         review=project.review,
         approved=project.approved,
+        swarm_plan=_parse_json_field(project.swarm_plan_json),
+        swarm_results=_parse_json_list_field(project.swarm_results_json),
+        swarm_validation=_parse_json_field(project.swarm_validation_json),
+        preview_url=project.preview_url or None,
+        preview_error=project.preview_error or None,
     )
 
 

@@ -45,6 +45,17 @@ class Project(Base):
     tech_plan: Mapped[str] = mapped_column(Text, default="")
     review: Mapped[str] = mapped_column(Text, default="")
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Engineering-swarm stage. Previously never persisted -- only visible on
+    # the synchronous POST /projects response for the run that had just
+    # finished. Now that POST /projects returns immediately and the mission
+    # runs in the background (see api/main.py), that was the only window
+    # these were ever visible in, so they're persisted here like every
+    # other stage's output.
+    swarm_plan_json: Mapped[str] = mapped_column(Text, default="")
+    swarm_results_json: Mapped[str] = mapped_column(Text, default="")
+    swarm_validation_json: Mapped[str] = mapped_column(Text, default="")
+    preview_url: Mapped[str] = mapped_column(Text, default="")
+    preview_error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

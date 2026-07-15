@@ -36,6 +36,11 @@ class LongTermMemory:
         review: str,
         approved: bool,
         id: str | None = None,
+        swarm_plan_json: str = "",
+        swarm_results_json: str = "",
+        swarm_validation_json: str = "",
+        preview_url: str = "",
+        preview_error: str = "",
     ) -> Project:
         with self._Session() as session:
             kwargs = dict(
@@ -47,6 +52,11 @@ class LongTermMemory:
                 tech_plan=tech_plan,
                 review=review,
                 approved=approved,
+                swarm_plan_json=swarm_plan_json,
+                swarm_results_json=swarm_results_json,
+                swarm_validation_json=swarm_validation_json,
+                preview_url=preview_url,
+                preview_error=preview_error,
             )
             if id is not None:
                 kwargs["id"] = id

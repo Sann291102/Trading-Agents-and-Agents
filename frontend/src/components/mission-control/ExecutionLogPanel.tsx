@@ -35,6 +35,7 @@ function statusWordFor(event: OrgEvent): StatusWord {
     deployment_started: { label: "deployment started", colorClass: "text-accent-blue" },
     deployment_finished: { label: "deployment finished", colorClass: "text-status-completed" },
     workflow_failed: { label: "workflow failed", colorClass: "text-status-needs_review" },
+    workflow_cancelled: { label: "stopped", colorClass: "text-status-waiting" },
   };
   return table[event.type];
 }

@@ -20,6 +20,7 @@ const NOTIFIABLE_TYPES = new Set<OrgEvent["type"]>([
   "approval_granted",
   "changes_requested",
   "workflow_failed",
+  "workflow_cancelled",
   "knowledge_added",
   "deployment_started",
   "deployment_finished",
@@ -38,10 +39,10 @@ interface OrgState {
    * reflects where real work is happening right now. */
   activeDepartment: string | null;
   activeProjectId: string | null;
-  /** Live-preview state for the most recently completed mission -- set once
-   * PromptBar's `createProject` call resolves with a `preview_url`/
-   * `preview_error`. Store-level (not component-local) so it survives
-   * PromptBar remounts and any other panel can read it later. */
+  /** Live-preview state for the most recently completed mission -- set from
+   * the `deployment_finished` SSE event's payload (see applyEvent below).
+   * Store-level (not component-local) so it survives PromptBar remounts and
+   * any other panel can read it later. */
   previewUrl: string | null;
   previewError: string | null;
   /** True strictly between the backend's `deployment_started` and
@@ -121,6 +122,19 @@ export const useOrgStore = create<OrgState>((set) => ({
             ? false
             : state.previewBuilding;
 
+      // The mission now runs on a background thread and POST /projects
+      // returns before it finishes (see api/main.py), so preview_url/
+      // preview_error can no longer come from that response -- the
+      // deployment_finished event's payload (set by graph.py's
+      // preview_node) is the only place they're available.
+      let previewUrl = state.previewUrl;
+      let previewError = state.previewError;
+      if (event.type === "deployment_finished") {
+        const payload = event.payload as { preview_url?: string; preview_error?: string };
+        previewUrl = payload.preview_url ?? null;
+        previewError = payload.preview_error ?? null;
+      }
+
       return {
         events,
         agents,
@@ -128,6 +142,8 @@ export const useOrgStore = create<OrgState>((set) => ({
         activeDepartment: event.department ?? state.activeDepartment,
         activeProjectId: event.project_id ?? state.activeProjectId,
         previewBuilding,
+        previewUrl,
+        previewError,
       };
     }),
 

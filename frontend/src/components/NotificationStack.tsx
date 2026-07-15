@@ -37,6 +37,8 @@ function visualForType(type: OrgEvent["type"]): NotificationVisual {
       return { colorClass: "text-status-needs_review", icon: "✎", label: "Changes Requested" };
     case "workflow_failed":
       return { colorClass: "text-status-needs_review", icon: "!", label: "Workflow Failed" };
+    case "workflow_cancelled":
+      return { colorClass: "text-status-waiting", icon: "■", label: "Mission Stopped" };
     case "knowledge_added":
       return { colorClass: "text-accent-cyan", icon: "◆", label: "Knowledge Added" };
     case "research_complete":

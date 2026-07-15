@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from aio.agents.base import Agent
 from aio.agents.parsing import json_response_instruction
 from aio.models.swarm import SwarmPlan, SwarmTaskResult, SwarmValidation
+from aio.orchestration.cancellation import MissionCancelled
 
 logger = logging.getLogger("aio.orchestration.swarm")
 
@@ -75,6 +76,13 @@ def execute_swarm(squad: dict[str, Agent], plan: SwarmPlan) -> list[SwarmTaskRes
             return SwarmTaskResult(
                 role=role, task=task, output=output, duration_seconds=time.monotonic() - t0
             )
+        except MissionCancelled:
+            # Unlike a genuine specialist failure (see module docstring:
+            # captured into the result, never raised), a cancellation means
+            # the operator stopped the whole mission -- it must propagate
+            # past `f.result()` below so the rest of the graph stops too,
+            # not get swallowed as if this one specialist merely failed.
+            raise
         except Exception as exc:  # captured, not raised -- see module docstring
             logger.error("swarm specialist %r failed: %s", role, exc)
             return SwarmTaskResult(

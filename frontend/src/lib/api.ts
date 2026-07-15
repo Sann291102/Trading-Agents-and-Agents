@@ -68,17 +68,39 @@ export function getMemoryEntries(limit = 50) {
   return fetchJSON<MemoryEntry[]>(`/memory-entries?limit=${limit}`);
 }
 
+export interface StartProjectResponse {
+  project_id: string;
+}
+
 /**
- * Fires the real orchestration pipeline. This request can take a while (a
- * dozen-plus sequential/parallel LLM calls) -- callers should not block UI
- * feedback on it resolving, since the live event stream already reflects
- * progress the moment each agent starts/finishes, independent of when this
- * HTTP response returns.
+ * Kicks off the real orchestration pipeline on the backend and returns the
+ * new project_id immediately (HTTP 202) -- the backend runs the mission on
+ * a background thread rather than blocking the request, since a real run is
+ * a dozen-plus sequential/parallel LLM calls. Callers track progress via the
+ * live SSE event stream (already reflects each agent starting/finishing)
+ * and via `getProject(project_id)` once the mission finishes and persists.
  */
-export function createProject(goal: string) {
-  return fetchJSON<ProjectResponse>("/projects", {
+export function startProject(goal: string) {
+  return fetchJSON<StartProjectResponse>("/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ goal }),
+  });
+}
+
+export interface CancelProjectResponse {
+  status: string;
+}
+
+/**
+ * Requests cooperative cancellation of an in-flight mission -- the backend
+ * checks this at each agent boundary (see aio/orchestration/cancellation.py)
+ * and stops making further LLM calls, it does not kill mid-flight work
+ * instantly. Throws (via fetchJSON) on a 404 if the mission already
+ * finished before the cancel request arrived.
+ */
+export function cancelProject(projectId: string) {
+  return fetchJSON<CancelProjectResponse>(`/projects/${encodeURIComponent(projectId)}/cancel`, {
+    method: "POST",
   });
 }

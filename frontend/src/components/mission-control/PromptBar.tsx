@@ -1,51 +1,88 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { createProject } from "@/lib/api";
+import { cancelProject, getProject, startProject } from "@/lib/api";
+import { queryKeys } from "@/lib/queryClient";
 import { useOrgStore } from "@/store/orgStore";
 
 import { HudFrame } from "./HudFrame";
 
-type SubmitStatus = "idle" | "running" | "error";
+const POLL_MS = 2000;
 
 /**
- * Persistent goal-input bar, bottom-left of Mission Control -- the always-
+ * Persistent goal-input bar, bottom-center of Mission Control -- the always-
  * visible alternative to discovering "Start Project" inside the ⌘K palette.
- * `createProject` only resolves once the whole graph run finishes (a dozen+
- * sequential/parallel LLM calls), so awaiting it directly is exactly the
- * "blocked until done" behavior this needs -- no separate polling required.
- * Live progress in the meantime comes from the already-wired SSE stream
- * (ExecutionLogPanel, MissionTimeline, StatusBar all reflect it independently).
+ *
+ * `startProject` now returns as soon as the backend has kicked the mission
+ * off on a background thread (see api/main.py), not once the whole graph
+ * run finishes -- a real run is a dozen+ sequential/parallel LLM calls, too
+ * long to hold a request open for. `running`/`errorMessage` are therefore
+ * computed at render time from two real signals rather than stored as
+ * separate state kept in sync via effects: (1) `GET /projects/{id}`
+ * succeeding -- the authoritative "has this persisted yet" signal
+ * `run_organization` writes at the very end -- and (2) a
+ * `workflow_failed`/`workflow_cancelled` SSE event tagged with this
+ * project_id, for runs that stop early and never persist.
  */
 export function PromptBar() {
   const [value, setValue] = useState("");
-  const [status, setStatus] = useState<SubmitStatus>("idle");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [runningProjectId, setRunningProjectId] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const running = status === "running";
+  const events = useOrgStore((state) => state.events);
+
+  const terminalEvent = runningProjectId
+    ? events.find(
+        (event) =>
+          event.project_id === runningProjectId &&
+          (event.type === "workflow_failed" || event.type === "workflow_cancelled")
+      )
+    : undefined;
+
+  const pollQuery = useQuery({
+    queryKey: queryKeys.project(runningProjectId ?? ""),
+    queryFn: () => getProject(runningProjectId as string),
+    enabled: Boolean(runningProjectId) && !terminalEvent,
+    refetchInterval: (query) => (query.state.data ? false : POLL_MS),
+    retry: false,
+  });
+
+  const running = Boolean(runningProjectId) && !terminalEvent && !pollQuery.data;
+  const errorMessage =
+    terminalEvent?.type === "workflow_failed" ? terminalEvent.message : submitError;
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     const goal = value.trim();
     if (!goal || running) return;
 
-    setStatus("running");
-    setErrorMessage(null);
+    setSubmitError(null);
     // The backend tears down the previous mission's preview server the
     // moment this new one starts (see PreviewManager) -- clear it here too
     // so PreviewPanel shows "working" instead of a now-dead iframe.
     useOrgStore.getState().setPreview(null, null);
 
     try {
-      const result = await createProject(goal);
-      useOrgStore.getState().setPreview(result.preview_url, result.preview_error);
+      const result = await startProject(goal);
+      setRunningProjectId(result.project_id);
       setValue("");
-      setStatus("idle");
     } catch (error) {
-      setStatus("error");
-      setErrorMessage(error instanceof Error ? error.message : "Failed to start project");
+      setSubmitError(error instanceof Error ? error.message : "Failed to start project");
+    }
+  }
+
+  async function handleCancel() {
+    if (!runningProjectId) return;
+    try {
+      await cancelProject(runningProjectId);
+    } catch (error) {
+      // Best-effort: if the mission already finished (404) or the request
+      // otherwise fails, `terminalEvent`/`pollQuery` above still resolve
+      // `running` to false once the mission's own terminal signal arrives.
+      console.error("cancelProject failed", error);
     }
   }
 
@@ -72,13 +109,23 @@ export function PromptBar() {
             ))}
           </span>
         )}
-        <button
-          type="submit"
-          disabled={!value.trim() || running}
-          className="hud-label shrink-0 rounded border border-accent-cyan/40 bg-accent-blue/20 px-3 py-2 text-[11px] font-medium text-accent-cyan transition-colors hover:bg-accent-blue/30 disabled:opacity-50"
-        >
-          {running ? "Working…" : "Start"}
-        </button>
+        {running ? (
+          <button
+            type="button"
+            onClick={handleCancel}
+            className="hud-label shrink-0 rounded border border-status-needs-review/50 bg-status-needs-review/10 px-3 py-2 text-[11px] font-medium text-status-needs_review transition-colors hover:bg-status-needs-review/20"
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!value.trim()}
+            className="hud-label shrink-0 rounded border border-accent-cyan/40 bg-accent-blue/20 px-3 py-2 text-[11px] font-medium text-accent-cyan transition-colors hover:bg-accent-blue/30 disabled:opacity-50"
+          >
+            Start
+          </button>
+        )}
       </form>
       {errorMessage && (
         <p className="border-t border-border px-3 py-1.5 text-[11px] text-status-needs_review">

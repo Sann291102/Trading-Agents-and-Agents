@@ -5,7 +5,7 @@ import gsap from "gsap";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { createProject, searchProjects, type ProjectSearchHit } from "@/lib/api";
+import { searchProjects, startProject, type ProjectSearchHit } from "@/lib/api";
 import { DEPARTMENTS } from "@/lib/orgTopology";
 import { useOrgStore } from "@/store/orgStore";
 
@@ -191,8 +191,8 @@ export function CommandPalette() {
     // Fire-and-forget: a real project run can take a long time (a dozen+
     // sequential/parallel LLM calls). The live SSE stream -- already wired
     // globally -- is what shows progress from here, not this response.
-    createProject(goal).catch((error: unknown) => {
-      console.error("createProject failed", error);
+    startProject(goal).catch((error: unknown) => {
+      console.error("startProject failed", error);
     });
 
     setProjectStartedMessage(`Started: "${goal}" -- watch the live event stream for progress.`);

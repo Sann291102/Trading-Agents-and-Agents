@@ -36,6 +36,8 @@ from aio.events.bus import OrgEvent, event_bus
 from aio.llm.anthropic_client import AnthropicClient
 from aio.observability.context import current_project_id
 from aio.observability.execution_log import ExecutionMetrics
+from aio.orchestration import cancellation
+from aio.orchestration.cancellation import MissionCancelled
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -116,6 +118,8 @@ class Agent:
         `run_logged_json` instead, so those real values reach the metrics
         instead of the blanks this method would otherwise log.
         """
+        if cancellation.is_cancelled(current_project_id.get()):
+            raise MissionCancelled
         started_at, t0 = self._mark_started()
         try:
             text = self.run(task, max_tokens=max_tokens)
@@ -148,6 +152,8 @@ class Agent:
         can only ever see a confidence the caller already knew -- which is
         nothing, for every current call site).
         """
+        if cancellation.is_cancelled(current_project_id.get()):
+            raise MissionCancelled
         started_at, t0 = self._mark_started()
         try:
             text = self.run(task, max_tokens=max_tokens)
