@@ -19,6 +19,7 @@ const EVENT_TYPES: EventType[] = [
   "deployment_started",
   "deployment_finished",
   "workflow_failed",
+  "workflow_cancelled",
 ];
 
 /**
