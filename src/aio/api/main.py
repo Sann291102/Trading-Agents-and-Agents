@@ -32,6 +32,7 @@ from aio.orchestration import cancellation
 from aio.orchestration.cancellation import MissionCancelled
 from aio.orchestration.graph import run_organization
 from aio.preview import preview_manager
+from aio.preview.manager import _resolve as _resolve_preview_path
 
 # At import time, not in lifespan: uvicorn imports this module before
 # serving, and agent/module loggers must be capturing from the first line.
@@ -105,6 +106,14 @@ def _parse_json_field(raw: str) -> dict | None:
 
 def _parse_json_list_field(raw: str) -> list[dict] | None:
     return json.loads(raw) if raw else None
+
+
+def _resolve_preview_dir(project_id: str):
+    # Same resolution PreviewManager.start() uses (settings.preview_workspace_dir
+    # / project_id, anchored at the repo root, not the process cwd) -- reused
+    # directly rather than duplicated, so this can never drift from where
+    # files are actually written.
+    return _resolve_preview_path(settings.preview_workspace_dir) / project_id
 
 
 @app.get("/health")
@@ -250,6 +259,22 @@ def get_project(project_id: str) -> ProjectResponse:
         swarm_validation=_parse_json_field(project.swarm_validation_json),
         preview_url=project.preview_url or None,
         preview_error=project.preview_error or None,
+    )
+
+
+@app.get("/projects/{project_id}/files")
+def list_project_files(project_id: str) -> list[str]:
+    """Where a mission's generated code actually lands on disk -- there's no
+    DB manifest table (the files themselves are the record, and they persist
+    on disk after the preview server stops -- see preview/manager.py), so
+    this walks `workspace/previews/<project_id>` fresh on every request."""
+    project_dir = _resolve_preview_dir(project_id)
+    if not project_dir.is_dir():
+        raise HTTPException(status_code=404, detail="no generated files for this project")
+    return sorted(
+        str(path.relative_to(project_dir)).replace("\\", "/")
+        for path in project_dir.rglob("*")
+        if path.is_file()
     )
 
 

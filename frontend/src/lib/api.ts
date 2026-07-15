@@ -40,6 +40,17 @@ export function getProject(id: string) {
   return fetchJSON<ProjectResponse>(`/projects/${encodeURIComponent(id)}`);
 }
 
+/**
+ * Where a mission's generated code actually lives on disk
+ * (workspace/previews/<project_id> on the backend) -- relative file paths,
+ * walked fresh from disk on every call since there's no DB manifest (see
+ * aio/api/main.py's list_project_files). Throws a 404 via fetchJSON when
+ * the mission never reached the swarm/preview stage.
+ */
+export function listPreviewFiles(id: string) {
+  return fetchJSON<string[]>(`/projects/${encodeURIComponent(id)}/files`);
+}
+
 export interface ProjectSearchHit {
   id: string;
   score: number;

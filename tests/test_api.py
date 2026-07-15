@@ -163,3 +163,26 @@ def test_create_project_end_to_end_via_http_with_demo_llm(tmp_path):
         del app.state.long_term
         del app.state.semantic
         del app.state.memory
+
+
+def test_list_project_files_returns_404_for_a_project_with_no_generated_files():
+    response = _client().get("/projects/no-such-project/files")
+    assert response.status_code == 404
+
+
+def test_list_project_files_walks_the_preview_workspace_dir(tmp_path):
+    project_id = "test-project-with-files"
+    project_dir = tmp_path / project_id
+    (project_dir / "components").mkdir(parents=True)
+    (project_dir / "app" / "page.tsx").parent.mkdir(parents=True)
+    (project_dir / "app" / "page.tsx").write_text("export default function Page() {}")
+    (project_dir / "components" / "Card.tsx").write_text("export function Card() {}")
+
+    original_dir = settings.preview_workspace_dir
+    settings.preview_workspace_dir = str(tmp_path)
+    try:
+        response = _client().get(f"/projects/{project_id}/files")
+        assert response.status_code == 200
+        assert response.json() == ["app/page.tsx", "components/Card.tsx"]
+    finally:
+        settings.preview_workspace_dir = original_dir

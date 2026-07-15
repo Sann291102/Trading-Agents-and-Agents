@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { getProject, getProjects } from "@/lib/api";
+import { getProject, getProjects, listPreviewFiles } from "@/lib/api";
 import { queryKeys } from "@/lib/queryClient";
 import { MISSION_STAGES, type MissionStage } from "@/lib/orgTopology";
 import { useOrgStore } from "@/store/orgStore";
@@ -130,6 +130,17 @@ export function MissionTimeline() {
     queryKey: queryKeys.project(playbackProjectId ?? ""),
     queryFn: () => getProject(playbackProjectId as string),
     enabled: isPlayback,
+  });
+
+  // 404s when the mission never reached the swarm/preview stage (e.g. the
+  // research/product review wasn't approved) -- that's a real, expected
+  // outcome, not an error worth surfacing, so this query intentionally
+  // never retries and its error state just means "no files" below.
+  const filesQuery = useQuery({
+    queryKey: queryKeys.projectFiles(playbackProjectId ?? ""),
+    queryFn: () => listPreviewFiles(playbackProjectId as string),
+    enabled: isPlayback,
+    retry: false,
   });
 
   const liveEvents = useMemo(
@@ -263,6 +274,21 @@ export function MissionTimeline() {
           ))}
         </div>
       </div>
+
+      {isPlayback && filesQuery.data && filesQuery.data.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-[11px] font-medium uppercase tracking-wide text-text-muted">
+            Generated files ({filesQuery.data.length})
+          </h3>
+          <ul className="max-h-32 space-y-0.5 overflow-y-auto font-mono text-[11px] text-text-secondary">
+            {filesQuery.data.map((path) => (
+              <li key={path} className="truncate">
+                {path}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </HudFrame>
   );
 }
