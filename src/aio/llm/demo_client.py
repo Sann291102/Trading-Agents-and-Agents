@@ -391,7 +391,7 @@ def _code_integrator(user: str) -> str:
 _ROLE_HANDLERS: dict[str, callable] = {
     **_HANDLERS,
     "Research Coordinator": _research_coordinator,
-    "Executive AI (CEO)": _executive,
+    "JARVIS": _executive,
     "Queen Coordinator": _queen_coordinator,
     "Production Validator": _production_validator,
     "Code Integrator": _code_integrator,

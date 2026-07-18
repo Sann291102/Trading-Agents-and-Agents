@@ -20,8 +20,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Organization -- Mission Control",
-  description: "Live headquarters of an autonomous AI organization",
+  title: "JARVIS -- Mission Control",
+  description: "JARVIS: the central intelligence of your autonomous AI organization",
 };
 
 export default function RootLayout({

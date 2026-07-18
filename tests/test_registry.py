@@ -8,7 +8,7 @@ def test_all_agent_classes_includes_every_implemented_agent():
 
     # The 8 hand-written agents...
     assert {
-        "Executive AI (CEO)",
+        "JARVIS",
         "Research Coordinator",
         "Domain Expert",
         "Market Research Analyst",
@@ -29,7 +29,7 @@ def test_all_agent_classes_includes_every_implemented_agent():
 def test_all_agent_classes_reports_correct_departments():
     departments = {cls.role: cls.department for cls in all_agent_classes()}
 
-    assert departments["Executive AI (CEO)"] == "Executive"
+    assert departments["JARVIS"] == "Executive"
     assert departments["Research Coordinator"] == "Research"
     assert departments["Domain Expert"] == "Research"
     assert departments["Market Research Analyst"] == "Research"

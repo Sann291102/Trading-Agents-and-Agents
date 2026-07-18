@@ -188,7 +188,7 @@ export function ExecutiveNarration() {
           }}
         >
           <p className="hud-label text-[10px] font-semibold text-accent-cyan">
-            Executive AI
+            JARVIS
           </p>
           <p className="mt-1 text-sm leading-snug text-text-primary">{caption.message}</p>
         </div>
@@ -201,10 +201,10 @@ export function ExecutiveNarration() {
         aria-pressed={muted}
         aria-label={
           !speechSupported
-            ? "Executive narration voice is unavailable in this browser"
+            ? "JARVIS narration voice is unavailable in this browser"
             : muted
-              ? "Unmute executive narration"
-              : "Mute executive narration"
+              ? "Unmute JARVIS narration"
+              : "Mute JARVIS narration"
         }
         className="hud-panel hud-label pointer-events-auto flex items-center gap-2 px-3 py-1.5 text-[10px] font-medium text-text-secondary transition-colors hover:text-accent-cyan disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-text-secondary"
       >

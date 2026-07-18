@@ -115,5 +115,5 @@ def validate_swarm(
         + json_response_instruction(SwarmValidation)
     )
     return validator.run_logged_json(
-        task, SwarmValidation, max_tokens=20000, handoff_target="Executive AI (CEO)"
+        task, SwarmValidation, max_tokens=20000, handoff_target="JARVIS"
     )

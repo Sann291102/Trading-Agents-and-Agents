@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { forwardRef, type ReactNode } from "react";
 
 const POSITIONED = /\b(?:static|relative|absolute|fixed|sticky)\b/;
 
@@ -18,22 +18,22 @@ const POSITIONED = /\b(?:static|relative|absolute|fixed|sticky)\b/;
  * Tailwind's generated stylesheet would silently win regardless of which
  * one the caller intended, turning an "absolute" floating panel back into
  * a normal in-flow block.
+ *
+ * Forwards its ref to the wrapping div so a caller (PromptBar's mission-
+ * start glow pulse, e.g.) can animate the frame itself with GSAP without
+ * this component needing to know anything about that animation.
  */
-export function HudFrame({
-  children,
-  className = "",
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  const positionClass = POSITIONED.test(className) ? "" : "relative ";
-  return (
-    <div className={`${positionClass}${className}`}>
-      <span className="pointer-events-none absolute -left-px -top-px h-3 w-3 border-l-2 border-t-2 border-accent-cyan/70" />
-      <span className="pointer-events-none absolute -right-px -top-px h-3 w-3 border-r-2 border-t-2 border-accent-cyan/70" />
-      <span className="pointer-events-none absolute -bottom-px -left-px h-3 w-3 border-b-2 border-l-2 border-accent-cyan/70" />
-      <span className="pointer-events-none absolute -bottom-px -right-px h-3 w-3 border-b-2 border-r-2 border-accent-cyan/70" />
-      {children}
-    </div>
-  );
-}
+export const HudFrame = forwardRef<HTMLDivElement, { children: ReactNode; className?: string }>(
+  function HudFrame({ children, className = "" }, ref) {
+    const positionClass = POSITIONED.test(className) ? "" : "relative ";
+    return (
+      <div ref={ref} className={`${positionClass}${className}`}>
+        <span className="pointer-events-none absolute -left-px -top-px h-3 w-3 border-l-2 border-t-2 border-accent-cyan/70" />
+        <span className="pointer-events-none absolute -right-px -top-px h-3 w-3 border-r-2 border-t-2 border-accent-cyan/70" />
+        <span className="pointer-events-none absolute -bottom-px -left-px h-3 w-3 border-b-2 border-l-2 border-accent-cyan/70" />
+        <span className="pointer-events-none absolute -bottom-px -right-px h-3 w-3 border-b-2 border-r-2 border-accent-cyan/70" />
+        {children}
+      </div>
+    );
+  }
+);

@@ -23,6 +23,7 @@ out of scope here -- see ARCHITECTURE.md's roadmap for what layers on top.
 from __future__ import annotations
 
 from aio.events.bus import OrgEvent, event_bus
+from aio.integrations.obsidian import ObsidianClient
 from aio.memory.service import MemoryService
 from aio.models.memory import MemoryEntry, MemoryMetadata, MemoryType
 from aio.models.research import ResearchReport
@@ -97,6 +98,7 @@ def record_project_memory(
             )
         )
 
+    obsidian = ObsidianClient()
     for entry in entries:
         service.create_entry(entry)
         event_bus.publish(
@@ -111,5 +113,29 @@ def record_project_memory(
                 ),
             )
         )
+        if obsidian.enabled:
+            _mirror_to_obsidian(obsidian, entry)
 
     return entries
+
+
+def _mirror_to_obsidian(obsidian: ObsidianClient, entry: MemoryEntry) -> None:
+    """Best-effort: writes `entry` into the vault as a real markdown note
+    under `JARVIS/<type>/`, so organizational memory is visible/searchable
+    in the operator's own second brain, not just this app's database. A
+    failure here is logged by ObsidianClient and never affects the run --
+    the local-DB entry already persisted above."""
+    frontmatter_tags = ", ".join(f'"{tag}"' for tag in entry.metadata.tags)
+    content = (
+        "---\n"
+        f'project_id: "{entry.project_id or ""}"\n'
+        f'type: "{entry.type.value}"\n'
+        f"confidence: {entry.confidence}\n"
+        f'source: "JARVIS"\n'
+        f'created_at: "{entry.created_at.isoformat()}"\n'
+        f"tags: [{frontmatter_tags}]\n"
+        "---\n\n"
+        f"# {entry.title}\n\n"
+        f"{entry.summary}\n"
+    )
+    obsidian.write_note(f"JARVIS/{entry.type.value}/{entry.id}.md", content)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aio.agents.base import Agent
 from aio.agents.parsing import json_response_instruction
+from aio.agents.research_tools import web_research_context
 from aio.models.research import CompetitorMatrix
 
 
@@ -28,7 +29,10 @@ class CompetitorIntelligenceAgent(Agent):
         return f"Research angle for goal '{goal}': competing products, SWOT, feature gaps."
 
     def execute(self, goal: str) -> CompetitorMatrix:
-        task = f"Business goal:\n{goal}\n\nProduce the competitor matrix now."
+        task = (
+            f"Business goal:\n{goal}\n\nProduce the competitor matrix now."
+            + web_research_context(f"{goal} competitors alternatives")
+        )
         return self.run_logged_json(task, CompetitorMatrix, handoff_target="Research Coordinator")
 
     def review(self, report: CompetitorMatrix) -> str:

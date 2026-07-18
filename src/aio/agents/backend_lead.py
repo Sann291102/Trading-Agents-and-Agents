@@ -26,5 +26,5 @@ class BackendLeadAgent(Agent):
             f"Business Requirements Document:\n{requirements.model_dump_json()}\n\n"
             "Produce the technical plan now."
         )
-        text, _ = self.run_logged(task, handoff_target="Executive AI (CEO)")
+        text, _ = self.run_logged(task, handoff_target="JARVIS")
         return text

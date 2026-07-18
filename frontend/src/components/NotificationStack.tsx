@@ -4,18 +4,12 @@ import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { useEffect, useRef } from "react";
 
+import { prefersReducedMotion } from "@/lib/motion";
 import type { OrgEvent } from "@/types";
 import { useOrgStore, type OrgNotification } from "@/store/orgStore";
 
 /** Auto-dismiss window -- "about 6-8 seconds" per spec. */
 const AUTO_DISMISS_MS = 7000;
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
 
 interface NotificationVisual {
   /** Tailwind text-color utility (also used via `bg-current` for the accent bar). */

@@ -13,7 +13,7 @@ from aio.models.research import (
 
 
 class ResearchCoordinatorAgent(Agent):
-    """Research & Planning department lead, reporting to the Executive AI.
+    """Research & Planning department lead, reporting to JARVIS.
 
     Breaks a business goal into research objectives for the four
     specialists (Domain Expert, Market Research, Competitor Intelligence,
@@ -34,7 +34,7 @@ class ResearchCoordinatorAgent(Agent):
     output_schema = ResearchReport
     system_prompt = (
         "You are the Research Coordinator of the organization's Research & "
-        "Planning department, reporting to the Executive AI. You receive "
+        "Planning department, reporting to JARVIS. You receive "
         "findings from four specialist researchers -- domain, market, "
         "competitor, and technical -- and merge them into one synthesis: "
         "remove duplicate information, surface any conflicting conclusions "
@@ -75,7 +75,7 @@ class ResearchCoordinatorAgent(Agent):
             f"Technical findings:\n{technical.model_dump_json()}\n\n"
             "Synthesize these into the unified research report now."
         )
-        synthesis = self.run_logged_json(task, ResearchSynthesis, handoff_target="Executive AI")
+        synthesis = self.run_logged_json(task, ResearchSynthesis, handoff_target="JARVIS")
         return ResearchReport.from_synthesis(synthesis, domain, market, competitor, technical)
 
     def review(self, report: ResearchReport) -> str:

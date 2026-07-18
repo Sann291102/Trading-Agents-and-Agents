@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { searchProjects, startProject, type ProjectSearchHit } from "@/lib/api";
+import { prefersReducedMotion } from "@/lib/motion";
 import { DEPARTMENTS } from "@/lib/orgTopology";
 import { useOrgStore } from "@/store/orgStore";
 
@@ -28,13 +29,6 @@ interface Command {
   keywords?: string[];
   disabled?: boolean;
   action: CommandAction;
-}
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
 }
 
 export function CommandPalette() {

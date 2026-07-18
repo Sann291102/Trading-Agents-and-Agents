@@ -1,14 +1,14 @@
 from .anthropic_client import AnthropicClient
 from .demo_client import DemoAnthropicClient
 from .nvidia_client import NvidiaClient
+from .resilient import ResilientLLMClient
 
 
-def build_default_llm():
-    """The LLM client `run_organization` uses when the caller doesn't pass
-    one explicitly -- reads `settings.llm_provider` so a demo run can be
-    triggered over the real API without a paid Anthropic key, or a real run
-    can go through NVIDIA's hosted API instead of Anthropic. See
-    demo_client.py's and nvidia_client.py's module docstrings."""
+def _build_raw_llm():
+    """Reads `settings.llm_provider` fresh every call -- so a provider
+    switch (edit `.env`, then `POST /admin/reload-config` or wait for the
+    next auto-retry, see `ResilientLLMClient`) takes effect without a
+    process restart."""
     from aio.config import settings
 
     if settings.llm_provider == "demo":
@@ -18,4 +18,19 @@ def build_default_llm():
     return AnthropicClient()
 
 
-__all__ = ["AnthropicClient", "DemoAnthropicClient", "NvidiaClient", "build_default_llm"]
+def build_default_llm():
+    """The LLM client `run_organization` uses when the caller doesn't pass
+    one explicitly. Wrapped in `ResilientLLMClient` so a mission survives
+    the operator changing the provider/key mid-run: a failed call reloads
+    settings and retries once against a freshly built client instead of
+    dying on stale config. See resilient.py."""
+    return ResilientLLMClient(_build_raw_llm)
+
+
+__all__ = [
+    "AnthropicClient",
+    "DemoAnthropicClient",
+    "NvidiaClient",
+    "ResilientLLMClient",
+    "build_default_llm",
+]

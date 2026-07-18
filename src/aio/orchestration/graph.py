@@ -51,6 +51,7 @@ from aio.agents import (
 )
 from aio.agents.base import Agent
 from aio.events.bus import OrgEvent, event_bus
+from aio.integrations.n8n import N8nClient
 from aio.llm import build_default_llm
 from aio.llm.anthropic_client import AnthropicClient
 from aio.memory.long_term import LongTermMemory
@@ -136,7 +137,7 @@ def build_graph(
         _emit(
             "task_delegated",
             department="Executive",
-            message="Executive AI delegated the goal to the Research & Planning department",
+            message="JARVIS delegated the goal to the Research & Planning department",
         )
         return {"ceo_plan": ceo_plan}
 
@@ -188,7 +189,7 @@ def build_graph(
             _emit(
                 "task_delegated",
                 department="Executive",
-                message="Executive AI approved the research and delegated requirements-writing to Product",
+                message="JARVIS approved the research and delegated requirements-writing to Product",
             )
         return {"research_review": review, "research_approved": approved}
 
@@ -481,5 +482,19 @@ def run_organization(
             record_project_memory(memory, research_report, goal, project_id)
         except Exception:  # noqa: BLE001 -- best-effort, non-critical write
             logger.exception("recording organizational memory failed for project %s", project_id)
+
+        # Fire a best-effort n8n webhook so an operator-built workflow can
+        # react to mission completion -- a no-op unless N8N_BASE_URL is set
+        # (see integrations/n8n.py). Failure here must never affect a
+        # mission that already completed and persisted above.
+        N8nClient().notify_mission_complete(
+            {
+                "project_id": project_id,
+                "goal": goal,
+                "approved": result.get("approved", False),
+                "research_approved": result.get("research_approved", False),
+                "preview_url": result.get("preview_url", ""),
+            }
+        )
 
     return result

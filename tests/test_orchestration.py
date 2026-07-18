@@ -88,7 +88,7 @@ class FakeAnthropicClient:
                 return json.dumps(RESEARCH_SYNTHESIS_PAYLOAD)
             raise AssertionError(f"unexpected Research Coordinator prompt: {user!r}")
 
-        if role == "Executive AI (CEO)":
+        if role == "JARVIS":
             if "execution plan" in user:
                 return (
                     "- Research: investigate domain, market, competitors, feasibility\n"
@@ -99,7 +99,7 @@ class FakeAnthropicClient:
                 return "APPROVE. Research is grounded and confidence is acceptable."
             if "Product department requirements:" in user:
                 return "APPROVE. Requirements and technical plan are aligned and scoped correctly."
-            raise AssertionError(f"unexpected Executive AI prompt: {user!r}")
+            raise AssertionError(f"unexpected JARVIS prompt: {user!r}")
 
         if role == "Domain Expert":
             return json.dumps(DOMAIN_PAYLOAD)

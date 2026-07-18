@@ -197,6 +197,23 @@ def get_current_user(authorization: str = Header(default="")) -> User:
     return user
 
 
+@app.post("/admin/reload-config")
+def reload_config(user: User = Depends(get_current_user)) -> dict:
+    """Re-reads `.env`/the process environment into the live `settings`
+    object so a changed LLM provider or API key takes effect on the very
+    next agent call, no restart needed. `ResilientLLMClient` already
+    triggers this automatically on a failed call (see llm/resilient.py) --
+    this endpoint is for reloading proactively, e.g. right after editing
+    `.env` and before the current provider actually fails."""
+    settings.reload()
+    model_for = _PROVIDER_MODEL.get(settings.llm_provider)
+    return {
+        "status": "reloaded",
+        "llm_provider": settings.llm_provider,
+        "model": model_for() if model_for else "demo",
+    }
+
+
 @app.get("/agents")
 def list_agents(user: User = Depends(get_current_user)) -> list[dict]:
     """Every implemented agent plus its live status, derived only from real

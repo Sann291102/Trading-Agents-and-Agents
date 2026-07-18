@@ -1,9 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import gsap from "gsap";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { cancelProject, getProject, startProject } from "@/lib/api";
+import { prefersReducedMotion } from "@/lib/motion";
 import { queryKeys } from "@/lib/queryClient";
 import { useOrgStore } from "@/store/orgStore";
 
@@ -31,6 +33,7 @@ export function PromptBar() {
   const [runningProjectId, setRunningProjectId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
 
   const events = useOrgStore((state) => state.events);
 
@@ -53,6 +56,19 @@ export function PromptBar() {
   const running = Boolean(runningProjectId) && !terminalEvent && !pollQuery.data;
   const errorMessage =
     terminalEvent?.type === "workflow_failed" ? terminalEvent.message : submitError;
+
+  // A pulse of cyan glow the instant JARVIS picks up a mission -- the state
+  // transition an operator most needs to *feel*, not just read in the input
+  // becoming disabled. Fires once per `running` flip, not on every render.
+  useEffect(() => {
+    const node = frameRef.current;
+    if (!node || !running || prefersReducedMotion()) return;
+    gsap.fromTo(
+      node,
+      { boxShadow: "0 0 0 0 rgba(34, 211, 238, 0.6)" },
+      { boxShadow: "0 0 0 10px rgba(34, 211, 238, 0)", duration: 0.6, ease: "power2.out" }
+    );
+  }, [running]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -87,7 +103,10 @@ export function PromptBar() {
   }
 
   return (
-    <HudFrame className="hud-panel pointer-events-auto absolute bottom-4 left-1/2 z-10 w-[34rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-hidden">
+    <HudFrame
+      ref={frameRef}
+      className="hud-panel pointer-events-auto absolute bottom-4 left-1/2 z-10 w-[34rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-hidden"
+    >
       {running && <div className="hud-scanline" aria-hidden="true" />}
       <form onSubmit={handleSubmit} className="flex items-center gap-2 p-2">
         <span className="hud-label shrink-0 pl-1 text-sm text-accent-cyan" aria-hidden="true">

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aio.agents.base import Agent
 from aio.agents.parsing import json_response_instruction
+from aio.agents.research_tools import web_research_context
 from aio.models.research import TechnicalResearchReport
 
 
@@ -31,7 +32,10 @@ class TechnicalResearchAgent(Agent):
         return f"Research angle for goal '{goal}': frameworks, cloud services, APIs, feasibility."
 
     def execute(self, goal: str) -> TechnicalResearchReport:
-        task = f"Business goal:\n{goal}\n\nProduce the technical research report now."
+        task = (
+            f"Business goal:\n{goal}\n\nProduce the technical research report now."
+            + web_research_context(f"{goal} technology stack frameworks APIs feasibility")
+        )
         return self.run_logged_json(
             task, TechnicalResearchReport, handoff_target="Research Coordinator"
         )

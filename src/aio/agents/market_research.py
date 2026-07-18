@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aio.agents.base import Agent
 from aio.agents.parsing import json_response_instruction
+from aio.agents.research_tools import web_research_context
 from aio.models.research import MarketResearchReport
 
 
@@ -26,7 +27,10 @@ class MarketResearchAgent(Agent):
         return f"Research angle for goal '{goal}': target users, market size, pricing, trends."
 
     def execute(self, goal: str) -> MarketResearchReport:
-        task = f"Business goal:\n{goal}\n\nProduce the market research report now."
+        task = (
+            f"Business goal:\n{goal}\n\nProduce the market research report now."
+            + web_research_context(f"{goal} market size target users pricing trends")
+        )
         return self.run_logged_json(
             task, MarketResearchReport, handoff_target="Research Coordinator"
         )

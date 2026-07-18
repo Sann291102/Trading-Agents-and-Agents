@@ -56,9 +56,42 @@ class Settings(BaseSettings):
     preview_workspace_dir: str = "workspace/previews"
     preview_template_dir: str = "src/aio/templates/nextjs-preview"
 
+    # Brave Search (https://api.search.brave.com) -- gives research agents a
+    # real web-search tool. Empty (the default) keeps research purely
+    # model-knowledge-based; see tools/brave_search.py.
+    brave_api_key: str = ""
+    brave_search_base_url: str = "https://api.search.brave.com/res/v1/web/search"
+
+    # Obsidian's "Local REST API" community plugin
+    # (https://github.com/coddingtonbear/obsidian-local-rest-api) -- must be
+    # installed and enabled in the target vault; its settings tab shows the
+    # API key and port. Empty key keeps JARVIS's memory writes local-DB-only;
+    # see integrations/obsidian.py.
+    obsidian_api_url: str = "https://127.0.0.1:27124"
+    obsidian_api_key: str = ""
+
+    # n8n (self-hosted, e.g. `docker compose up n8n`) -- JARVIS fires a
+    # best-effort webhook here when a mission completes, so an n8n workflow
+    # can react (notify, file, sync, whatever the user builds). Empty base
+    # URL keeps this a no-op; see integrations/n8n.py.
+    n8n_base_url: str = ""
+    n8n_api_key: str = ""
+    n8n_mission_webhook_path: str = "/webhook/jarvis-mission-complete"
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]
+
+    def reload(self) -> None:
+        """Re-reads `.env` + the process environment into this same object,
+        in place, so every module holding `from aio.config import settings`
+        sees the update immediately -- no process restart needed to pick up
+        a changed API key or LLM_PROVIDER. Safe to call mid-mission: agents
+        read `settings.*` fresh each time they build an LLM client
+        (`build_default_llm`), never caching field values themselves."""
+        fresh = Settings()
+        for field_name in type(self).model_fields:
+            setattr(self, field_name, getattr(fresh, field_name))
 
 
 settings = Settings()

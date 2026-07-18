@@ -48,7 +48,7 @@ export const PIPELINE_ORDER: readonly string[] = [
  * exception PIPELINE_ORDER already accepts.
  */
 export const DEPARTMENT_HUB_ROLE: Record<string, string> = {
-  Executive: "Executive AI (CEO)",
+  Executive: "JARVIS",
   Research: "Research Coordinator",
   Product: "Product Manager",
   Engineering: "Backend Lead",

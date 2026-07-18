@@ -27,7 +27,7 @@ class ProductManagerAgent(Agent):
         "You are the Product Manager of the Product department. You do not "
         "invent requirements from assumptions -- you receive a research "
         "report (domain knowledge, market research, competitor "
-        "intelligence, technical feasibility) that the Executive AI has "
+        "intelligence, technical feasibility) that JARVIS has "
         "already reviewed and approved, and you turn it into a full "
         "Business Requirements Document: a product vision, epics containing "
         "user stories (each with 2-3 acceptance criteria), a release "

@@ -5,6 +5,7 @@ import { Stars } from "@react-three/drei";
 import { Bloom, EffectComposer } from "@react-three/postprocessing";
 
 import { CinematicCamera } from "./CinematicCamera";
+import { GalaxyField } from "./GalaxyField";
 import { NeuralCore } from "./NeuralCore";
 import { OrgGraph } from "./OrgGraph";
 
@@ -27,6 +28,10 @@ export default function MissionControlScene() {
       <hemisphereLight intensity={0.25} color="#4c6fff" groundColor="#05060a" />
 
       <Stars radius={160} depth={60} count={2200} factor={2} saturation={0} fade speed={0.3} />
+
+      {/* Atmospheric galaxy + drifting constellation nodes, behind the live
+       * org graph -- see GalaxyField. Renders no interactive data. */}
+      <GalaxyField />
 
       <NeuralCore />
       <OrgGraph />

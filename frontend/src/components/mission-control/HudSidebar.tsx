@@ -1,8 +1,12 @@
 "use client";
 
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useRef } from "react";
 
+import { prefersReducedMotion } from "@/lib/motion";
 import { DEPARTMENTS } from "@/lib/orgTopology";
 import { useOrgStore } from "@/store/orgStore";
 
@@ -36,6 +40,33 @@ export function HudSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const connectionStatus = useOrgStore((state) => state.connectionStatus);
+  const navRef = useRef<HTMLElement>(null);
+
+  // JARVIS "coming online" boot sequence -- the rail's own frame settles in
+  // first, then each destination lights up in sequence, communicating that
+  // this is a system waking up, not a static page rendering. Runs once per
+  // mount, not per navigation (deps: []), and snaps straight to the settled
+  // state under prefers-reduced-motion instead of skipping the reveal.
+  useGSAP(
+    () => {
+      const nav = navRef.current;
+      if (!nav) return;
+      const links = nav.querySelectorAll<HTMLElement>("[data-boot-item]");
+
+      if (prefersReducedMotion()) {
+        gsap.set(nav, { opacity: 1, x: 0 });
+        gsap.set(links, { opacity: 1, x: 0 });
+        return;
+      }
+
+      gsap.set(links, { opacity: 0, x: -8 });
+      const timeline = gsap.timeline();
+      timeline
+        .fromTo(nav, { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.3, ease: "power2.out" })
+        .to(links, { opacity: 1, x: 0, duration: 0.25, stagger: 0.04, ease: "power2.out" }, "-=0.1");
+    },
+    { scope: navRef }
+  );
 
   function handleLogout() {
     useOrgStore.getState().setToken(null);
@@ -44,15 +75,17 @@ export function HudSidebar() {
 
   return (
     <nav
+      ref={navRef}
       aria-label="Mission Control navigation"
       className="hud-panel pointer-events-auto fixed left-0 top-0 bottom-10 z-20 flex w-16 flex-col items-center gap-1 py-4"
     >
       <div
+        data-boot-item
         className="mb-3 flex h-8 w-8 items-center justify-center rounded-full border border-accent-cyan/50 text-[10px] font-bold text-accent-cyan"
         style={{ boxShadow: "var(--glow-cyan)" }}
         aria-hidden="true"
       >
-        AI
+        J
       </div>
 
       <SidebarLink href="/" label="Mission Control" active={pathname === "/"}>
@@ -80,6 +113,7 @@ export function HudSidebar() {
 
       <button
         type="button"
+        data-boot-item
         onClick={openCommandPalette}
         aria-label="Open command palette"
         title="Command palette (⌘K)"
@@ -90,6 +124,7 @@ export function HudSidebar() {
 
       <button
         type="button"
+        data-boot-item
         onClick={handleLogout}
         aria-label="Log out"
         title="Log out"
@@ -125,6 +160,7 @@ function SidebarLink({
   return (
     <Link
       href={href}
+      data-boot-item
       aria-label={label}
       aria-current={active ? "page" : undefined}
       title={label}

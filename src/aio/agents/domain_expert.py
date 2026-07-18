@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aio.agents.base import Agent
 from aio.agents.parsing import json_response_instruction
+from aio.agents.research_tools import web_research_context
 from aio.models.research import DomainKnowledgeReport
 
 
@@ -34,7 +35,10 @@ class DomainExpertAgent(Agent):
         )
 
     def execute(self, goal: str) -> DomainKnowledgeReport:
-        task = f"Business goal:\n{goal}\n\nProduce the domain knowledge report now."
+        task = (
+            f"Business goal:\n{goal}\n\nProduce the domain knowledge report now."
+            + web_research_context(f"{goal} industry terminology compliance standards")
+        )
         return self.run_logged_json(
             task, DomainKnowledgeReport, handoff_target="Research Coordinator"
         )
