@@ -35,6 +35,7 @@ import logging
 import uuid
 from typing import TypedDict
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from aio.agents import (
@@ -75,6 +76,25 @@ from aio.orchestration.swarm import execute_swarm, plan_swarm, validate_swarm
 from aio.preview import preview_manager
 
 logger = logging.getLogger("aio.orchestration.graph")
+
+# One process-wide checkpointer: LangGraph saves the mission state after
+# every completed node under thread_id=project_id, which is what makes a
+# failed mission resumable from where it stopped (rather than restarted
+# from scratch) after the operator fixes the LLM provider/key in .env.
+# In-memory on purpose -- a resume only makes sense while the API process
+# that watched the mission fail is still alive; a durable (SQLite)
+# checkpointer is the upgrade path if that ever changes.
+_CHECKPOINTER = MemorySaver()
+
+# project_id -> goal for missions that failed mid-run and can be resumed.
+# Only failures land here (not cancellations -- those are deliberate).
+_RESUMABLE: dict[str, str] = {}
+
+
+def resumable_goal(project_id: str) -> str | None:
+    """The goal of a failed, resumable mission, or None if that id isn't
+    resumable (unknown, still running, cancelled, or already completed)."""
+    return _RESUMABLE.get(project_id)
 
 
 class OrgState(TypedDict, total=False):
@@ -360,7 +380,7 @@ def build_graph(
         graph.add_edge("swarm_validate", "preview")
         graph.add_edge("preview", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=_CHECKPOINTER)
 
 
 def run_organization(
@@ -372,6 +392,7 @@ def run_organization(
     persist: bool = True,
     swarm: bool = True,
     project_id: str | None = None,
+    _resume: bool = False,
 ) -> OrgState:
     llm = llm or build_default_llm()
     if persist:
@@ -425,19 +446,34 @@ def run_organization(
         swarm_squad=swarm_squad,
     )
 
+    # thread_id keys this run's checkpoints; on resume, invoking with None
+    # input tells LangGraph to continue the existing thread from its last
+    # saved checkpoint instead of starting over at the entry point.
+    config = {"configurable": {"thread_id": project_id}}
+    graph_input = None if _resume else {"goal": goal, "project_id": project_id}
+
     try:
-        result: OrgState = app.invoke({"goal": goal, "project_id": project_id})
+        result: OrgState = app.invoke(graph_input, config)
     except MissionCancelled:
         _emit("workflow_cancelled", message="Mission stopped by operator request")
         raise
     except Exception as exc:
-        _emit("workflow_failed", message=_excerpt(f"Workflow failed: {exc}"))
+        # The checkpoint written after the last *completed* node survives in
+        # _CHECKPOINTER, so the operator can fix the provider/key in .env and
+        # resume this exact mission -- see resume_organization.
+        _RESUMABLE[project_id] = goal
+        _emit(
+            "workflow_failed",
+            message=_excerpt(f"Workflow failed: {exc}"),
+            payload={"resumable": True},
+        )
         raise
     finally:
         current_project_id.reset(token)
         cancellation.clear(project_id)
 
     result["project_id"] = project_id
+    _RESUMABLE.pop(project_id, None)
 
     if persist:
         semantic = semantic or SemanticMemory()
@@ -498,3 +534,37 @@ def run_organization(
         )
 
     return result
+
+
+def resume_organization(project_id: str, **kwargs) -> OrgState:
+    """Resume a failed mission from its last completed node.
+
+    Re-reads `.env` first so a provider/API-key change the operator just
+    made is what the rebuilt agents run on, then re-invokes the mission's
+    checkpoint thread -- completed nodes are not re-executed; the failed
+    node retries on the fresh provider. Raises KeyError if the id isn't
+    resumable (unknown, still running, cancelled, or already completed).
+    `kwargs` pass through to run_organization (memory backends, swarm flag)
+    so the API can hand in the same app.state services it uses for new runs.
+    """
+    goal = _RESUMABLE.get(project_id)
+    if goal is None:
+        raise KeyError(f"no resumable mission with id {project_id}")
+
+    from aio.config import settings
+
+    settings.reload()
+    _emit_for_project(
+        project_id,
+        "task_delegated",
+        department="Executive",
+        message="JARVIS is resuming the mission from its last completed step",
+    )
+    return run_organization(goal, project_id=project_id, _resume=True, **kwargs)
+
+
+def _emit_for_project(project_id: str, type_: str, **kwargs) -> None:
+    """Like _emit, but for callers running before current_project_id is set
+    (resume_organization emits its resuming notice prior to entering
+    run_organization, which is what binds the contextvar)."""
+    event_bus.publish(OrgEvent(type=type_, project_id=project_id, **kwargs))

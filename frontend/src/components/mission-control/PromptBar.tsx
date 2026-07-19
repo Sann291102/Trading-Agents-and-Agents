@@ -4,7 +4,7 @@ import gsap from "gsap";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { cancelProject, getProject, startProject } from "@/lib/api";
+import { cancelProject, getProject, resumeProject, startProject } from "@/lib/api";
 import { prefersReducedMotion } from "@/lib/motion";
 import { queryKeys } from "@/lib/queryClient";
 import { useOrgStore } from "@/store/orgStore";
@@ -32,6 +32,11 @@ export function PromptBar() {
   const [value, setValue] = useState("");
   const [runningProjectId, setRunningProjectId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Terminal events consumed by a Resume click. A resumed mission keeps the
+  // same project_id, so without this the old workflow_failed event would
+  // still match below and the bar would stay stuck in its failed state.
+  const [dismissedEventIds, setDismissedEventIds] = useState<Set<string>>(new Set());
+  const [resuming, setResuming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
 
@@ -41,7 +46,8 @@ export function PromptBar() {
     ? events.find(
         (event) =>
           event.project_id === runningProjectId &&
-          (event.type === "workflow_failed" || event.type === "workflow_cancelled")
+          (event.type === "workflow_failed" || event.type === "workflow_cancelled") &&
+          !dismissedEventIds.has(event.id)
       )
     : undefined;
 
@@ -87,6 +93,24 @@ export function PromptBar() {
       setValue("");
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Failed to start project");
+    }
+  }
+
+  async function handleResume() {
+    if (!runningProjectId || !terminalEvent || resuming) return;
+    setResuming(true);
+    setSubmitError(null);
+    try {
+      await resumeProject(runningProjectId);
+      // Consume the failure event so `running` flips back to true and the
+      // poll for the (same) project's persistence starts again.
+      setDismissedEventIds((prev) => new Set(prev).add(terminalEvent.id));
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error ? error.message : "Failed to resume mission"
+      );
+    } finally {
+      setResuming(false);
     }
   }
 
@@ -147,9 +171,20 @@ export function PromptBar() {
         )}
       </form>
       {errorMessage && (
-        <p className="border-t border-border px-3 py-1.5 text-[11px] text-status-needs_review">
-          {errorMessage}
-        </p>
+        <div className="flex items-center gap-2 border-t border-border px-3 py-1.5">
+          <p className="min-w-0 flex-1 text-[11px] text-status-needs_review">{errorMessage}</p>
+          {terminalEvent?.type === "workflow_failed" && (
+            <button
+              type="button"
+              onClick={handleResume}
+              disabled={resuming}
+              className="hud-label shrink-0 rounded border border-accent-cyan/40 bg-accent-blue/20 px-3 py-1 text-[11px] font-medium text-accent-cyan transition-colors hover:bg-accent-blue/30 disabled:opacity-50"
+              title="Fix the API key/provider in .env, then resume this mission from where it stopped"
+            >
+              {resuming ? "Resuming…" : "Resume"}
+            </button>
+          )}
+        </div>
       )}
     </HudFrame>
   );

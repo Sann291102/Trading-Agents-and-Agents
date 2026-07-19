@@ -35,7 +35,7 @@ from aio.memory.service import MemoryService
 from aio.observability.logging_setup import setup_logging
 from aio.orchestration import cancellation
 from aio.orchestration.cancellation import MissionCancelled
-from aio.orchestration.graph import run_organization
+from aio.orchestration.graph import resumable_goal, resume_organization, run_organization
 from aio.preview import preview_manager
 from aio.preview.manager import _resolve as _resolve_preview_path
 
@@ -298,6 +298,47 @@ def create_project(
         daemon=True,
     ).start()
     return StartProjectResponse(project_id=project_id)
+
+
+def _resume_mission_in_background(project_id: str) -> None:
+    try:
+        resume_organization(
+            project_id,
+            long_term=app.state.long_term,
+            semantic=app.state.semantic,
+            memory=app.state.memory,
+        )
+    except KeyError:
+        # Raced with another resume click that got there first; that other
+        # resume is now running this mission, so nothing to do.
+        logger.info("mission %s was no longer resumable when the thread started", project_id)
+    except MissionCancelled:
+        pass  # run_organization already published workflow_cancelled
+    except Exception:
+        # A resume that fails again publishes workflow_failed (with
+        # resumable=true) exactly like the original failure -- the operator
+        # can fix .env again and press Resume again.
+        logger.exception("resumed mission %s failed", project_id)
+
+
+@app.post("/projects/{project_id}/resume", status_code=202)
+def resume_project(project_id: str, user: User = Depends(get_current_user)) -> dict:
+    """Resume a failed mission on the same project after the operator fixed
+    the LLM provider/key in .env. Re-reads config, then continues the
+    mission's checkpointed graph from its last completed node -- finished
+    research/product/engineering stages are not re-run or re-billed."""
+    if resumable_goal(project_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no resumable mission with that id (not failed, or the server restarted)",
+        )
+    cancellation.register(project_id)
+    threading.Thread(
+        target=_resume_mission_in_background,
+        args=(project_id,),
+        daemon=True,
+    ).start()
+    return {"status": "resuming", "project_id": project_id}
 
 
 @app.post("/projects/{project_id}/cancel")

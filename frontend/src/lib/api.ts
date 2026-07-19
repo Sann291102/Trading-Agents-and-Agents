@@ -125,6 +125,23 @@ export function cancelProject(projectId: string) {
   });
 }
 
+export interface ResumeProjectResponse {
+  status: string;
+  project_id: string;
+}
+
+/**
+ * Resume a failed mission on the same project after fixing the LLM
+ * provider/API key in .env -- the backend re-reads config and continues the
+ * mission's checkpointed graph from its last completed node (404 if the
+ * mission isn't in a resumable state, e.g. the server restarted).
+ */
+export function resumeProject(projectId: string) {
+  return fetchJSON<ResumeProjectResponse>(`/projects/${encodeURIComponent(projectId)}/resume`, {
+    method: "POST",
+  });
+}
+
 export interface ChatResponse {
   reply: string;
 }
