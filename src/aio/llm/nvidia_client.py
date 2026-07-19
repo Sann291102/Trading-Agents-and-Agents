@@ -25,6 +25,20 @@ class NvidiaClient:
             api_key=api_key or settings.nvidia_api_key,
         )
 
+    def _extra_body(self, max_tokens: int) -> dict:
+        """Reasoning-control params differ per model family on NVIDIA's API.
+        Nemotron accepts `reasoning_budget`; GLM (z-ai/glm-*) rejects it with
+        a 400 and instead takes `clear_thinking` in its chat_template_kwargs.
+        Sending the wrong one is a hard request failure, so pick by model."""
+        model = self.model.lower()
+        if model.startswith("z-ai/glm") or "glm" in model:
+            return {"chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}}
+        # Nemotron and other reasoning models that honor an explicit budget.
+        return {
+            "chat_template_kwargs": {"enable_thinking": True},
+            "reasoning_budget": max_tokens,
+        }
+
     def complete(self, system: str, user: str, max_tokens: int = 20000) -> str:
         stream = self._client.chat.completions.create(
             model=self.model,
@@ -35,10 +49,7 @@ class NvidiaClient:
             temperature=1,
             top_p=0.95,
             max_tokens=max_tokens,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": True},
-                "reasoning_budget": max_tokens,
-            },
+            extra_body=self._extra_body(max_tokens),
             stream=True,
         )
         # Nemotron's reasoning output arrives as two separate delta streams:
