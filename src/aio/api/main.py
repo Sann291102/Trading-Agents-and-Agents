@@ -27,7 +27,14 @@ from aio.agents.registry import agent_status_tracker, all_agent_classes
 from aio.agents.business import ChiefOfStaffAgent, ExecutiveAssistantAgent
 from aio.auth import AuthService, InvalidCredentials, UsernameTaken
 from aio.business import BusinessService
-from aio.models.business import Approval, BusinessMetricSnapshot, Company, ConversationTurn
+from aio.models.business import (
+    Approval,
+    BusinessMetricSnapshot,
+    Company,
+    ConversationTurn,
+    Milestone,
+    next_stage,
+)
 from aio.config import settings
 from aio.db.models import User
 from aio.events.bus import event_bus
@@ -581,6 +588,107 @@ def record_company_metrics(
         BusinessMetricSnapshot(company_id=company_id, **request.model_dump())
     )
     return snapshot.model_dump(mode="json")
+
+
+class MilestoneCreateRequest(BaseModel):
+    title: str
+    detail: str = ""
+    owner_agent: str = "Chief of Staff"
+    stage_target: str = ""
+
+
+class MilestoneStatusRequest(BaseModel):
+    status: str  # todo | in_progress | done | blocked
+    blocker: str = ""
+
+
+@app.get("/companies/{company_id}/milestones")
+def list_milestones(company_id: str, user: User = Depends(get_current_user)) -> list[dict]:
+    """The company's path to its next stage. For a pre-revenue company this,
+    not the metrics grid, is what the dashboard shows."""
+    if app.state.business.get_company(company_id) is None:
+        raise HTTPException(status_code=404, detail="unknown company")
+    return [m.model_dump(mode="json") for m in app.state.business.list_milestones(company_id)]
+
+
+@app.post("/companies/{company_id}/milestones", status_code=201)
+def create_milestone(
+    company_id: str, request: MilestoneCreateRequest, user: User = Depends(get_current_user)
+) -> dict:
+    company = app.state.business.get_company(company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="unknown company")
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="milestone title is required")
+    milestone = app.state.business.create_milestone(
+        Milestone(
+            company_id=company_id,
+            title=title,
+            detail=request.detail,
+            owner_agent=request.owner_agent,
+            stage_target=request.stage_target or (next_stage(company.stage) or company.stage),
+        )
+    )
+    return milestone.model_dump(mode="json")
+
+
+@app.post("/companies/{company_id}/milestones/{milestone_id}/status")
+def set_milestone_status(
+    company_id: str,
+    milestone_id: str,
+    request: MilestoneStatusRequest,
+    user: User = Depends(get_current_user),
+) -> dict:
+    try:
+        milestone = app.state.business.set_milestone_status(
+            milestone_id, request.status, request.blocker
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="status must be todo, in_progress, done, or blocked"
+        ) from None
+    if milestone is None:
+        raise HTTPException(status_code=404, detail="unknown milestone")
+    return milestone.model_dump(mode="json")
+
+
+@app.post("/companies/{company_id}/launch-plan")
+def generate_launch_plan(company_id: str, user: User = Depends(get_current_user)) -> dict:
+    """The Chief of Staff plans how to get this company to its next stage,
+    and the resulting milestones are persisted. This is JARVIS's answer for a
+    company with no revenue yet: a plan to build one, not a report on one.
+    Milestones already done or in progress are preserved."""
+    company = app.state.business.get_company(company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="unknown company")
+    target = next_stage(company.stage)
+    if target is None:
+        raise HTTPException(status_code=400, detail=f"{company.name} is already at the final stage")
+
+    context = app.state.business.snapshot_for_briefing()
+    chief = ChiefOfStaffAgent(build_default_llm(), long_term=app.state.long_term)
+    plan = chief.launch_plan(company.name, target, context)
+    saved = app.state.business.replace_milestones(
+        company_id,
+        [
+            Milestone(
+                company_id=company_id,
+                title=item.title,
+                detail=item.detail,
+                owner_agent=item.owner_agent,
+                stage_target=target,
+            )
+            for item in plan.milestones
+        ],
+    )
+    return {
+        "target_stage": target,
+        "current_stage_assessment": plan.current_stage_assessment,
+        "critical_path": plan.critical_path,
+        "confidence": plan.confidence,
+        "milestones": [m.model_dump(mode="json") for m in saved],
+    }
 
 
 class ApprovalCreateRequest(BaseModel):

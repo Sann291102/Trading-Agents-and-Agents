@@ -214,6 +214,24 @@ class ApprovalRecord(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class MilestoneRecord(Base):
+    """One step on a company's path to its next stage. Pre-revenue companies
+    are run by these rather than by metric snapshots."""
+
+    __tablename__ = "milestones"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    company_id: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    stage_target: Mapped[str] = mapped_column(String, default="launched")
+    owner_agent: Mapped[str] = mapped_column(String, default="Chief of Staff")
+    status: Mapped[str] = mapped_column(String, default="todo", index=True)
+    blocker: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ConversationTurnRecord(Base):
     """One founder <-> JARVIS exchange from the voice-first assistant.
     Persisted so JARVIS remembers the conversation across sessions and

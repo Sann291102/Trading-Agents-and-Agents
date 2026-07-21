@@ -22,14 +22,34 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# The lifecycle JARVIS walks a company through, in order. Everything before
+# "launched" is pre-revenue: there are no customers or MRR to report yet, so
+# JARVIS runs the company by milestones (what must ship to reach the next
+# stage) rather than by metrics.
+COMPANY_STAGES = ["idea", "building", "launched", "operating", "scaling"]
+PRE_REVENUE_STAGES = {"idea", "building"}
+
+
+def next_stage(stage: str) -> str | None:
+    """The stage after `stage`, or None at the end of the ladder."""
+    if stage not in COMPANY_STAGES:
+        return None
+    index = COMPANY_STAGES.index(stage)
+    return COMPANY_STAGES[index + 1] if index + 1 < len(COMPANY_STAGES) else None
+
+
 class Company(BaseModel):
     id: str = Field(default_factory=_uuid)
     name: str
     description: str = ""
     industry: str = ""
-    stage: str = "operating"  # idea | building | launched | operating | scaling
+    stage: str = "idea"  # see COMPANY_STAGES
     website: str = ""
     created_at: datetime = Field(default_factory=_now)
+
+    @property
+    def is_pre_revenue(self) -> bool:
+        return self.stage in PRE_REVENUE_STAGES
 
 
 class BusinessMetricSnapshot(BaseModel):
@@ -66,6 +86,44 @@ class Approval(BaseModel):
     status: Literal["pending", "approved", "rejected"] = "pending"
     created_at: datetime = Field(default_factory=_now)
     decided_at: datetime | None = None
+
+
+class Milestone(BaseModel):
+    """One concrete thing that must happen for a company to reach its next
+    stage. This is how JARVIS runs a company that has no metrics yet: a
+    pre-launch business is a list of things to ship and validate, each owned
+    by a business agent, not a revenue dashboard."""
+
+    id: str = Field(default_factory=_uuid)
+    company_id: str
+    title: str
+    detail: str = ""
+    stage_target: str = Field(default="launched", description="Stage this unlocks")
+    owner_agent: str = "Chief of Staff"
+    status: Literal["todo", "in_progress", "done", "blocked"] = "todo"
+    blocker: str = Field(default="", description="Why it is stuck, if blocked")
+    created_at: datetime = Field(default_factory=_now)
+    completed_at: datetime | None = None
+
+
+class PlannedMilestone(BaseModel):
+    """A milestone as proposed by the Chief of Staff, before it is saved."""
+
+    title: str
+    detail: str = Field(..., description="What done looks like, concretely")
+    owner_agent: str = Field(..., description="Which business agent drives it")
+
+
+class LaunchPlan(BaseModel):
+    """The Chief of Staff's plan to move a company to its next stage --
+    what JARVIS produces instead of a briefing when there is no revenue to
+    report yet."""
+
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    reasoning_summary: str = ""
+    current_stage_assessment: str = Field(..., description="Honest read of where the company is")
+    critical_path: str = Field(..., description="The single fastest route to the next stage")
+    milestones: list[PlannedMilestone] = Field(default_factory=list)
 
 
 class PriorityItem(BaseModel):

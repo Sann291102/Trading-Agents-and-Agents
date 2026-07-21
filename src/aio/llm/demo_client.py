@@ -563,6 +563,51 @@ def _executive_assistant(user: str) -> str:
     )
 
 
+def _launch_plan(user: str) -> str:
+    return json.dumps(
+        {
+            "confidence": 0.72,
+            "reasoning_summary": "Planned from the company's stated pre-launch state.",
+            "current_stage_assessment": (
+                "Pre-revenue and pre-launch: there is no product in front of users "
+                "yet, so nothing can be measured. The only thing that matters is "
+                "shortening the distance to a first working release."
+            ),
+            "critical_path": (
+                "Cut scope to the one workflow a first user would pay for, ship it "
+                "to a small private group, then convert that group."
+            ),
+            "milestones": [
+                {
+                    "title": "Define the single core workflow for v1",
+                    "detail": "One user journey, written down, that the release must support end to end.",
+                    "owner_agent": "Operations Director",
+                },
+                {
+                    "title": "Ship a working private beta",
+                    "detail": "That workflow running for real users, not a demo.",
+                    "owner_agent": "Operations Director",
+                },
+                {
+                    "title": "Recruit 10 design partners",
+                    "detail": "Ten named people who agreed to use it and give feedback.",
+                    "owner_agent": "Sales Director",
+                },
+                {
+                    "title": "Decide launch pricing",
+                    "detail": "A published price and what the first tier includes.",
+                    "owner_agent": "Finance Manager",
+                },
+                {
+                    "title": "Prepare the launch story",
+                    "detail": "Positioning and channels ready for launch day.",
+                    "owner_agent": "Marketing Director",
+                },
+            ],
+        }
+    )
+
+
 def _business_agent_handler(system: str):
     """Business-roster prompts all open with 'You are the <role>' -- match
     on the raw system prompt so demo mode covers the whole Executive
@@ -572,7 +617,7 @@ def _business_agent_handler(system: str):
     for cls in BUSINESS_AGENT_CLASSES:
         if system.startswith(f"You are the {cls.role}"):
             if cls.role == "Chief of Staff" and "JSON schema" in system:
-                return _chief_of_staff
+                return _launch_plan if "the plan, not" in system else _chief_of_staff
             if cls.role == "Executive Assistant" and "JSON schema" in system:
                 return _executive_assistant
             return lambda user, role=cls.role: (

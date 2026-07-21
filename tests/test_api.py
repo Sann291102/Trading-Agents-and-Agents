@@ -233,6 +233,68 @@ def test_list_project_files_walks_the_preview_workspace_dir(tmp_path):
         settings.preview_workspace_dir = original_dir
 
 
+def test_launch_plan_persists_milestones_for_a_pre_revenue_company(monkeypatch, tmp_path):
+    """The pre-revenue path end to end: the Chief of Staff plans the route to
+    the next stage and the milestones are saved, owned by real agents."""
+    import aio.api.main as main_module
+    from aio.agents.business import BUSINESS_AGENT_CLASSES
+    from aio.business import BusinessService
+    from aio.llm import DemoAnthropicClient
+
+    monkeypatch.setattr(main_module, "build_default_llm", lambda: DemoAnthropicClient())
+
+    business = BusinessService(database_url=f"sqlite:///{tmp_path}/biz.db")
+    business.init_schema()
+    long_term = LongTermMemory(database_url=f"sqlite:///{tmp_path}/lt.db")
+    long_term.init_schema()
+
+    app.state.business = business
+    app.state.long_term = long_term
+    try:
+        client = _client()
+        company = client.get("/companies").json()[0]
+        assert company["stage"] == "building"  # seeded pre-launch
+
+        assert client.get(f"/companies/{company['id']}/milestones").json() == []
+
+        planned = client.post(f"/companies/{company['id']}/launch-plan")
+        assert planned.status_code == 200
+        body = planned.json()
+        assert body["target_stage"] == "launched"
+        assert body["critical_path"]
+        assert body["milestones"]
+
+        roles = {cls.role for cls in BUSINESS_AGENT_CLASSES}
+        for milestone in body["milestones"]:
+            assert milestone["owner_agent"] in roles
+            assert milestone["stage_target"] == "launched"
+
+        # Persisted, not just returned.
+        stored = client.get(f"/companies/{company['id']}/milestones").json()
+        assert len(stored) == len(body["milestones"])
+
+        # Status transitions round-trip.
+        first = stored[0]["id"]
+        blocked = client.post(
+            f"/companies/{company['id']}/milestones/{first}/status",
+            json={"status": "blocked", "blocker": "Waiting on broker API"},
+        )
+        assert blocked.status_code == 200
+        assert blocked.json()["blocker"] == "Waiting on broker API"
+
+        bad = client.post(
+            f"/companies/{company['id']}/milestones/{first}/status", json={"status": "nope"}
+        )
+        assert bad.status_code == 400
+
+        missing = client.post(f"/companies/{company['id']}/milestones/nonexistent/status",
+                              json={"status": "done"})
+        assert missing.status_code == 404
+    finally:
+        del app.state.business
+        del app.state.long_term
+
+
 def test_assistant_greet_and_converse_with_history(monkeypatch, tmp_path):
     """The voice-first path: /assistant/greet composes a grounded greeting,
     /assistant accepts the conversation so far. Demo LLM, real

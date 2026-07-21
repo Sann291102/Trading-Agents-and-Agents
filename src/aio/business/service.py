@@ -19,18 +19,27 @@ from aio.db.models import (
     BusinessMetricRecord,
     CompanyRecord,
     ConversationTurnRecord,
+    MilestoneRecord,
 )
-from aio.models.business import Approval, BusinessMetricSnapshot, Company, ConversationTurn
+from aio.models.business import (
+    Approval,
+    BusinessMetricSnapshot,
+    Company,
+    ConversationTurn,
+    Milestone,
+    next_stage,
+)
 
 _TRADEW_SEED = Company(
     name="TradeW",
     description=(
-        "Trading platform for the Indian stock market. Has its own product AI "
-        "(Sentinel) serving customers; JARVIS operates the business around it."
+        "Trading platform for the Indian stock market, with its own product AI "
+        "(Sentinel) for customers. Not launched yet -- JARVIS's job is to get it "
+        "built, launched, and to its first paying customers."
     ),
     industry="Fintech / Capital Markets",
-    stage="operating",
-    website="https://tradew.in",
+    stage="building",
+    website="",
 )
 
 
@@ -132,6 +141,60 @@ class BusinessService:
             session.refresh(record)
             return _to_approval(record)
 
+    # -- milestones (how a pre-revenue company is run) --------------------
+
+    def create_milestone(self, milestone: Milestone) -> Milestone:
+        with self._Session() as session:
+            record = MilestoneRecord(**milestone.model_dump())
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return _to_milestone(record)
+
+    def list_milestones(self, company_id: str) -> list[Milestone]:
+        """Oldest first -- the order the Chief of Staff planned them, which
+        is the order they should be worked."""
+        with self._Session() as session:
+            stmt = (
+                select(MilestoneRecord)
+                .where(MilestoneRecord.company_id == company_id)
+                .order_by(MilestoneRecord.created_at.asc())
+            )
+            return [_to_milestone(r) for r in session.scalars(stmt)]
+
+    def set_milestone_status(
+        self, milestone_id: str, status: str, blocker: str = ""
+    ) -> Milestone | None:
+        if status not in ("todo", "in_progress", "done", "blocked"):
+            raise ValueError(f"invalid milestone status {status!r}")
+        with self._Session() as session:
+            record = session.get(MilestoneRecord, milestone_id)
+            if record is None:
+                return None
+            record.status = status
+            record.blocker = blocker if status == "blocked" else ""
+            record.completed_at = datetime.now(timezone.utc) if status == "done" else None
+            session.commit()
+            session.refresh(record)
+            return _to_milestone(record)
+
+    def replace_milestones(self, company_id: str, milestones: list[Milestone]) -> list[Milestone]:
+        """Swap in a freshly generated launch plan, keeping any milestone
+        already done or in progress -- regenerating a plan must never erase
+        work the founder has already banked."""
+        kept = [m for m in self.list_milestones(company_id) if m.status in ("done", "in_progress")]
+        kept_titles = {m.title.strip().lower() for m in kept}
+        with self._Session() as session:
+            stmt = select(MilestoneRecord).where(MilestoneRecord.company_id == company_id)
+            for record in session.scalars(stmt):
+                if record.status not in ("done", "in_progress"):
+                    session.delete(record)
+            session.commit()
+        for milestone in milestones:
+            if milestone.title.strip().lower() not in kept_titles:
+                self.create_milestone(milestone)
+        return self.list_milestones(company_id)
+
     # -- conversation memory ----------------------------------------------
 
     def save_turn(self, turn: ConversationTurn) -> None:
@@ -155,12 +218,45 @@ class BusinessService:
     # -- briefing context -------------------------------------------------
 
     def snapshot_for_briefing(self) -> str:
-        """A plain-text digest of every company's latest numbers + pending
-        approvals -- the grounding context handed to the Chief of Staff so
-        the briefing is about real data, never invented."""
+        """A plain-text digest of every company's real state + pending
+        approvals -- the grounding context handed to the Chief of Staff and
+        the Executive Assistant so their output is about real data, never
+        invented.
+
+        What "state" means depends on the stage. A pre-revenue company has no
+        customers or MRR, so reporting on metrics there would be fiction: it
+        is described by its milestones and what is blocking the next stage
+        instead. Saying so explicitly is what stops the model from filling
+        the silence with plausible-sounding numbers.
+        """
         lines: list[str] = []
         for company in self.list_companies():
             lines.append(f"Company: {company.name} ({company.stage}) -- {company.description}")
+            target = next_stage(company.stage)
+
+            if company.is_pre_revenue:
+                lines.append(
+                    f"  PRE-REVENUE: not launched yet. No customers, no revenue, no MRR -- "
+                    f"these do not exist yet and must never be reported as numbers. "
+                    f"The goal is reaching '{target}'."
+                    if target
+                    else "  PRE-REVENUE: not launched yet."
+                )
+                milestones = self.list_milestones(company.id)
+                if not milestones:
+                    lines.append(
+                        "  No launch plan yet -- the first job is deciding what must ship."
+                    )
+                else:
+                    lines.append("  Milestones on the path to launch:")
+                    for milestone in milestones:
+                        note = f" BLOCKED: {milestone.blocker}" if milestone.blocker else ""
+                        lines.append(
+                            f"    [{milestone.status}] {milestone.title} "
+                            f"(owner: {milestone.owner_agent}){note}"
+                        )
+                continue
+
             history = self.list_metrics(company.id, limit=3)
             if not history:
                 lines.append("  No metric snapshots recorded yet.")
@@ -214,6 +310,21 @@ def _to_snapshot(record: BusinessMetricRecord) -> BusinessMetricSnapshot:
         burn_rate_monthly=record.burn_rate_monthly,
         notes=record.notes,
         recorded_at=_utc(record.recorded_at),
+    )
+
+
+def _to_milestone(record: MilestoneRecord) -> Milestone:
+    return Milestone(
+        id=record.id,
+        company_id=record.company_id,
+        title=record.title,
+        detail=record.detail,
+        stage_target=record.stage_target,
+        owner_agent=record.owner_agent,
+        status=record.status,
+        blocker=record.blocker,
+        created_at=_utc(record.created_at),
+        completed_at=_utc(record.completed_at) if record.completed_at else None,
     )
 
 

@@ -9,7 +9,14 @@ from aio.agents import BUSINESS_AGENT_CLASSES, all_agent_classes
 from aio.agents.business import ChiefOfStaffAgent, ExecutiveAssistantAgent
 from aio.business import BusinessService
 from aio.llm import DemoAnthropicClient
-from aio.models.business import Approval, BusinessMetricSnapshot, Company, ConversationTurn
+from aio.models.business import (
+    Approval,
+    BusinessMetricSnapshot,
+    Company,
+    ConversationTurn,
+    Milestone,
+    next_stage,
+)
 
 
 @pytest.fixture()
@@ -19,10 +26,100 @@ def service() -> BusinessService:
     return svc
 
 
-def test_tradew_is_seeded(service: BusinessService):
+def test_tradew_is_seeded_as_pre_launch(service: BusinessService):
+    """TradeW has not launched. Seeding it as 'operating' would make every
+    briefing talk about customers and revenue that do not exist."""
     companies = service.list_companies()
     assert [c.name for c in companies] == ["TradeW"]
     assert companies[0].industry.startswith("Fintech")
+    assert companies[0].stage == "building"
+    assert companies[0].is_pre_revenue
+
+
+def test_stage_ladder():
+    assert next_stage("idea") == "building"
+    assert next_stage("building") == "launched"
+    assert next_stage("scaling") is None
+    assert next_stage("nonsense") is None
+
+
+def test_milestone_lifecycle(service: BusinessService):
+    company = service.list_companies()[0]
+    created = service.create_milestone(
+        Milestone(company_id=company.id, title="Ship private beta", owner_agent="Operations Director")
+    )
+    assert created.status == "todo"
+
+    blocked = service.set_milestone_status(created.id, "blocked", blocker="Waiting on broker API")
+    assert blocked is not None
+    assert blocked.status == "blocked"
+    assert blocked.blocker == "Waiting on broker API"
+
+    done = service.set_milestone_status(created.id, "done")
+    assert done is not None
+    assert done.completed_at is not None
+    # Moving off 'blocked' must clear the stale reason.
+    assert done.blocker == ""
+
+
+def test_milestone_status_is_validated(service: BusinessService):
+    company = service.list_companies()[0]
+    milestone = service.create_milestone(Milestone(company_id=company.id, title="X"))
+    with pytest.raises(ValueError):
+        service.set_milestone_status(milestone.id, "almost")
+
+
+def test_replan_preserves_banked_work(service: BusinessService):
+    """Regenerating a launch plan must not erase milestones the founder has
+    already finished or started."""
+    company = service.list_companies()[0]
+    finished = service.create_milestone(Milestone(company_id=company.id, title="Pick the core workflow"))
+    service.set_milestone_status(finished.id, "done")
+    stale = service.create_milestone(Milestone(company_id=company.id, title="Old idea to drop"))
+    assert stale.status == "todo"
+
+    after = service.replace_milestones(
+        company.id,
+        [
+            Milestone(company_id=company.id, title="Pick the core workflow"),
+            Milestone(company_id=company.id, title="Recruit design partners"),
+        ],
+    )
+    titles = [m.title for m in after]
+    assert "Pick the core workflow" in titles
+    assert "Recruit design partners" in titles
+    assert "Old idea to drop" not in titles
+    # The completed one survived as completed, and wasn't duplicated.
+    assert titles.count("Pick the core workflow") == 1
+    assert next(m for m in after if m.title == "Pick the core workflow").status == "done"
+
+
+def test_pre_revenue_snapshot_states_there_are_no_numbers(service: BusinessService):
+    """The whole point of the stage split: a pre-launch company's context
+    must say plainly that revenue does not exist, so the model cannot fill
+    the silence with plausible-looking figures."""
+    company = service.list_companies()[0]
+    service.create_milestone(
+        Milestone(company_id=company.id, title="Ship private beta", owner_agent="Operations Director")
+    )
+    context = service.snapshot_for_briefing()
+    assert "PRE-REVENUE" in context
+    assert "no customers, no revenue, no MRR" in context.lower() or "No customers, no revenue" in context
+    assert "Ship private beta" in context
+    assert "Operations Director" in context
+    # No metrics vocabulary should appear for a company with no metrics.
+    assert "MRR $" not in context
+
+
+def test_launched_company_still_reports_metrics(service: BusinessService):
+    """The stage split must not break the metrics path for a real business."""
+    company = service.create_company(Company(name="Acme", stage="operating"))
+    service.record_metrics(
+        BusinessMetricSnapshot(company_id=company.id, mrr=5000, customers=42)
+    )
+    context = service.snapshot_for_briefing()
+    assert "MRR $5,000" in context
+    assert "42 customers" in context
 
 
 def test_seed_is_idempotent(service: BusinessService):
@@ -92,16 +189,46 @@ def test_recent_turns_limit_keeps_the_newest(service: BusinessService):
 
 
 def test_briefing_snapshot_contains_real_numbers(service: BusinessService):
-    company = service.list_companies()[0]
+    """Metrics reach the briefing context for a company far enough along to
+    have them. (Seeded TradeW is pre-launch, so it is deliberately not the
+    subject here -- see test_pre_revenue_snapshot_states_there_are_no_numbers.)"""
+    company = service.create_company(Company(name="Northwind", stage="operating"))
     service.record_metrics(
         BusinessMetricSnapshot(company_id=company.id, mrr=12000, customers=340, cash_balance=250000)
     )
     service.create_approval(Approval(title="Sign the new support vendor"))
     context = service.snapshot_for_briefing()
-    assert "TradeW" in context
+    assert "Northwind" in context
     assert "$12,000" in context
     assert "340 customers" in context
     assert "Sign the new support vendor" in context
+
+
+def test_roster_names_are_offered_to_the_planner():
+    """Milestone owners have to be real agents or the work can never be
+    delegated -- a live run invented 'Product Agent' and 'Engineering Agent'
+    before the roster was passed into the prompt."""
+    from aio.agents.business import business_roster_names
+
+    names = business_roster_names()
+    roles = {cls.role for cls in BUSINESS_AGENT_CLASSES}
+    for role in roles:
+        assert role in names
+    assert "Product Agent" not in names
+    assert "Engineering Agent" not in names
+
+
+def test_demo_launch_plan_owners_are_real_agents():
+    """The demo plan must obey the same rule it teaches."""
+    from aio.agents.business import ChiefOfStaffAgent
+
+    plan = ChiefOfStaffAgent(DemoAnthropicClient()).launch_plan(
+        "TradeW", "launched", "Company: TradeW (building) -- PRE-REVENUE"
+    )
+    roles = {cls.role for cls in BUSINESS_AGENT_CLASSES}
+    assert plan.milestones
+    for milestone in plan.milestones:
+        assert milestone.owner_agent in roles, f"{milestone.owner_agent!r} is not a real agent"
 
 
 def test_business_agents_registered():

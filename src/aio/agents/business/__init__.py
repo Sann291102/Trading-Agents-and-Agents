@@ -1,5 +1,6 @@
 from .roster import (
     BUSINESS_AGENT_CLASSES,
+    business_roster_names,
     BusinessAnalystAgent,
     CampaignManagerAgent,
     ChiefOfStaffAgent,
@@ -18,6 +19,7 @@ from .roster import (
 
 __all__ = [
     "BUSINESS_AGENT_CLASSES",
+    "business_roster_names",
     "ChiefOfStaffAgent",
     "ExecutiveAssistantAgent",
     "OperationsDirectorAgent",

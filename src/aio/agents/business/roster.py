@@ -23,7 +23,24 @@ from __future__ import annotations
 
 from aio.agents.base import Agent
 from aio.agents.parsing import json_response_instruction
-from aio.models.business import AssistantReply, ConversationTurn, ExecutiveBriefing
+from aio.models.business import (
+    AssistantReply,
+    ConversationTurn,
+    ExecutiveBriefing,
+    LaunchPlan,
+)
+
+
+def business_roster_names() -> str:
+    """The roles an agent may assign work to, as a comma-separated list.
+
+    Fed into the Chief of Staff's prompts because a model left to invent
+    owner names does exactly that -- real runs produced "Product Agent" and
+    "Engineering Agent", neither of which exists, so the resulting milestone
+    could never actually be delegated. Built from the roster itself so it
+    cannot drift as agents are added.
+    """
+    return ", ".join(cls.role for cls in BUSINESS_AGENT_CLASSES)
 
 
 class BusinessAgent(Agent):
@@ -54,17 +71,54 @@ class ChiefOfStaffAgent(BusinessAgent):
         """The morning executive briefing, grounded in the real company
         snapshot assembled by BusinessService.snapshot_for_briefing()."""
         self.system_prompt = (
-            "You are the Chief of Staff for a founder operating one or more "
-            "companies (TradeW, a trading platform, is the first). Compose "
-            "today's executive briefing strictly from the business context "
-            "provided -- never invent metrics that are not present. If data is "
-            "missing, say so in the summary and make collecting it a priority. "
-            "Priorities must name which business agent should drive each item "
-            "(e.g. Marketing Director, Sales Director, Finance Manager).\n\n"
+            "You are the Chief of Staff for a founder building and operating "
+            "one or more companies. Compose today's executive briefing "
+            "strictly from the business context provided -- never invent "
+            "metrics that are not present.\n\n"
+            "Companies marked PRE-REVENUE have not launched: they have no "
+            "customers, no revenue, and no MRR. For those, do not discuss "
+            "growth rates, churn, runway, or any financial metric -- there is "
+            "nothing to measure yet. Judge them only on progress toward "
+            "launch: what has shipped, what is blocked, what must happen next "
+            "to get a working product in front of the first real user. "
+            "business_health for a pre-revenue company reflects whether it is "
+            "moving toward launch, not whether it is profitable.\n\n"
+            "Every priority's owner_agent MUST be chosen verbatim from this "
+            "roster -- these are the only agents that exist:\n"
+            f"{business_roster_names()}\n\n"
             f"{json_response_instruction(ExecutiveBriefing)}"
         )
         user = f"Current business context:\n{context}\n\nProduce today's executive briefing."
         return self.run_logged_json(user, ExecutiveBriefing, handoff_target="Founder")
+
+    def launch_plan(self, company_name: str, target_stage: str, context: str) -> LaunchPlan:
+        """Decompose "get this company to its next stage" into concrete,
+        owned milestones. This is what JARVIS produces for a company with no
+        revenue yet -- the plan to build one, not a report on one."""
+        self.system_prompt = (
+            "You are the Chief of Staff for a founder taking a company from "
+            "nothing to a real business. Your job right now is the plan, not "
+            "a status report.\n\n"
+            "Given the company's actual state, lay out the milestones that "
+            "move it to the target stage. Rules: every milestone must be "
+            "concrete enough to know when it is done (not 'improve "
+            "marketing'); order them so each unblocks the next; assign each "
+            "to the business agent who should drive it; keep the list short "
+            "enough to actually execute (4-7 items). Never assume budget, "
+            "team, or traction that the context does not mention. If the "
+            "company has already completed milestones, build on them rather "
+            "than repeating them.\n\n"
+            "owner_agent MUST be chosen verbatim from this roster -- these "
+            "are the only agents that exist, and an invented name cannot be "
+            "given the work:\n"
+            f"{business_roster_names()}\n\n"
+            f"{json_response_instruction(LaunchPlan)}"
+        )
+        user = (
+            f"Business context:\n{context}\n\n"
+            f"Plan how to get {company_name} to the '{target_stage}' stage."
+        )
+        return self.run_logged_json(user, LaunchPlan, handoff_target="Founder")
 
 
 class ExecutiveAssistantAgent(BusinessAgent):
@@ -85,7 +139,11 @@ class ExecutiveAssistantAgent(BusinessAgent):
             "them directly (often by voice, so keep replies natural, spoken-"
             "style, and under 120 words unless detail is explicitly asked for). "
             "Ground answers in the business context provided; never invent "
-            "numbers. Use the conversation so far to stay coherent -- resolve "
+            "numbers. Companies marked PRE-REVENUE have not launched -- they "
+            "have no customers, revenue, or MRR. If asked how one is doing, "
+            "answer in terms of progress toward launch and say plainly that "
+            "there are no numbers yet; never produce a figure to fill the "
+            "gap. Use the conversation so far to stay coherent -- resolve "
             "pronouns and follow-ups against it. If the founder asks for work "
             "that a specialist should own, name that agent in "
             "suggested_actions (e.g. 'Ask the Sales Director to draft the "

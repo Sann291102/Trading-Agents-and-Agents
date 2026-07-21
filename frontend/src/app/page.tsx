@@ -8,12 +8,18 @@ import { VoiceAssistantBar } from "@/components/executive/VoiceAssistantBar";
 import {
   decideApproval,
   generateBriefing,
+  generateLaunchPlan,
   getApprovals,
   getCompanies,
   getCompanyMetrics,
+  getMilestones,
+  isPreRevenue,
+  setMilestoneStatus,
   type BusinessMetricSnapshot,
   type Company,
   type ExecutiveBriefing,
+  type Milestone,
+  type MilestoneStatus,
 } from "@/lib/api";
 
 const HEALTH_COLOR: Record<string, string> = {
@@ -172,8 +178,9 @@ function BriefingPanel() {
       ) : (
         !generate.isPending && (
           <p className="mt-3 text-[12px] text-text-muted">
-            The Chief of Staff composes a briefing from your companies&apos; latest numbers and
-            pending decisions. Generate one to start the day.
+            The Chief of Staff reads where each company actually stands — launch progress
+            before you have customers, the numbers once you do — and tells you what to do
+            about it. Generate one to start the day.
           </p>
         )
       )}
@@ -204,9 +211,14 @@ function CompaniesSection() {
 }
 
 function CompanyCard({ company }: { company: Company }) {
+  const preRevenue = isPreRevenue(company);
   const metrics = useQuery({
     queryKey: ["company-metrics", company.id],
     queryFn: () => getCompanyMetrics(company.id),
+    // A company that hasn't launched has no metrics to fetch -- asking for
+    // them is what makes an empty grid look like missing data rather than a
+    // business that simply doesn't have customers yet.
+    enabled: !preRevenue,
   });
 
   const latest: BusinessMetricSnapshot | undefined = metrics.data?.[0];
@@ -222,11 +234,17 @@ function CompanyCard({ company }: { company: Company }) {
           </p>
         </div>
         <span className="hud-label text-[9px] text-text-muted">
-          {latest ? `updated ${new Date(latest.recorded_at).toLocaleDateString()}` : "no data yet"}
+          {preRevenue
+            ? "pre-launch"
+            : latest
+              ? `updated ${new Date(latest.recorded_at).toLocaleDateString()}`
+              : "no data yet"}
         </span>
       </div>
 
-      {latest ? (
+      {preRevenue ? (
+        <LaunchPlanPanel company={company} />
+      ) : latest ? (
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
           <Metric label="MRR" value={money(latest.mrr)} delta={previous && latest.mrr - previous.mrr} isMoney />
           <Metric
@@ -276,6 +294,146 @@ function CompanyCard({ company }: { company: Company }) {
         </p>
       )}
     </section>
+  );
+}
+
+const MILESTONE_STATUS: Record<MilestoneStatus, { label: string; className: string }> = {
+  todo: { label: "To do", className: "border-border text-text-muted" },
+  in_progress: { label: "In progress", className: "border-status-executing/60 text-status-executing" },
+  done: { label: "Done", className: "border-status-completed/60 text-status-completed" },
+  blocked: { label: "Blocked", className: "border-status-needs-review/60 text-status-needs-review" },
+};
+
+const NEXT_STATUS: Record<MilestoneStatus, MilestoneStatus> = {
+  todo: "in_progress",
+  in_progress: "done",
+  done: "todo",
+  blocked: "in_progress",
+};
+
+/**
+ * What the dashboard shows for a company that hasn't launched. There is no
+ * revenue, no customers and no runway to report, so showing a metrics grid
+ * would be showing zeros or fiction. Instead JARVIS shows the route to the
+ * next stage: what must ship, who owns it, and what is blocked.
+ */
+function LaunchPlanPanel({ company }: { company: Company }) {
+  const queryClient = useQueryClient();
+  const milestones = useQuery({
+    queryKey: ["milestones", company.id],
+    queryFn: () => getMilestones(company.id),
+  });
+  const [assessment, setAssessment] = useState<string>("");
+  const [criticalPath, setCriticalPath] = useState<string>("");
+
+  const plan = useMutation({
+    mutationFn: () => generateLaunchPlan(company.id),
+    onSuccess: (result) => {
+      setAssessment(result.current_stage_assessment);
+      setCriticalPath(result.critical_path);
+      queryClient.invalidateQueries({ queryKey: ["milestones", company.id] });
+    },
+  });
+
+  const advance = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: MilestoneStatus }) =>
+      setMilestoneStatus(company.id, id, status),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["milestones", company.id] }),
+  });
+
+  const items: Milestone[] = milestones.data ?? [];
+  const done = items.filter((m) => m.status === "done").length;
+
+  return (
+    <div className="mt-3 flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[12px] text-text-muted">
+          Not launched yet — no customers or revenue to report. This is the route there.
+          {items.length > 0 && (
+            <span className="text-text-primary">
+              {" "}
+              {done}/{items.length} done
+            </span>
+          )}
+        </p>
+        <button
+          type="button"
+          onClick={() => plan.mutate()}
+          disabled={plan.isPending}
+          className="shrink-0 rounded border border-accent-cyan/50 px-3 py-1.5 text-[12px] text-accent-cyan transition-colors hover:bg-accent-cyan/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {plan.isPending ? "Planning…" : items.length > 0 ? "Replan" : "Plan the launch"}
+        </button>
+      </div>
+
+      {plan.isError && (
+        <p className="text-[12px] text-status-needs-review">
+          {plan.error instanceof Error ? plan.error.message : "Planning failed"}
+        </p>
+      )}
+
+      {assessment && (
+        <div className="rounded border border-border bg-surface-raised/60 p-3">
+          <p className="hud-label mb-1 text-[9px] text-text-muted">Where TradeW actually is</p>
+          <p className="text-[12px] leading-relaxed text-text-primary/90">{assessment}</p>
+          {criticalPath && (
+            <p className="mt-2 text-[12px] text-accent-cyan">Critical path: {criticalPath}</p>
+          )}
+        </div>
+      )}
+
+      {items.length === 0 && !plan.isPending ? (
+        <p className="text-[12px] text-text-muted">
+          No launch plan yet. Ask the Chief of Staff to plan the route to launch — or just say
+          it out loud to JARVIS.
+        </p>
+      ) : (
+        <ol className="space-y-2">
+          {items.map((milestone, index) => {
+            const status = MILESTONE_STATUS[milestone.status];
+            return (
+              <li
+                key={milestone.id}
+                className="flex items-start gap-3 rounded border border-border bg-surface-raised/60 p-2.5"
+              >
+                <span className="hud-label mt-0.5 text-[10px] text-text-muted">{index + 1}</span>
+                <div className="min-w-0 flex-1">
+                  <p
+                    className={`text-[13px] ${
+                      milestone.status === "done"
+                        ? "text-text-muted line-through"
+                        : "text-text-primary"
+                    }`}
+                  >
+                    {milestone.title}
+                  </p>
+                  {milestone.detail && (
+                    <p className="mt-0.5 text-[11px] text-text-muted">{milestone.detail}</p>
+                  )}
+                  <p className="mt-1 text-[10px] text-accent-cyan">{milestone.owner_agent}</p>
+                  {milestone.blocker && (
+                    <p className="mt-1 text-[11px] text-status-needs-review">
+                      Blocked: {milestone.blocker}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    advance.mutate({ id: milestone.id, status: NEXT_STATUS[milestone.status] })
+                  }
+                  disabled={advance.isPending}
+                  title={`Mark as ${MILESTONE_STATUS[NEXT_STATUS[milestone.status]].label}`}
+                  className={`shrink-0 rounded border px-2 py-1 text-[10px] uppercase transition-colors hover:bg-white/5 disabled:opacity-40 ${status.className}`}
+                >
+                  {status.label}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
   );
 }
 

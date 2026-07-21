@@ -193,6 +193,64 @@ export interface BusinessMetricSnapshot {
   recorded_at: string;
 }
 
+export const PRE_REVENUE_STAGES = ["idea", "building"];
+
+export function isPreRevenue(company: Company): boolean {
+  return PRE_REVENUE_STAGES.includes(company.stage);
+}
+
+export type MilestoneStatus = "todo" | "in_progress" | "done" | "blocked";
+
+export interface Milestone {
+  id: string;
+  company_id: string;
+  title: string;
+  detail: string;
+  stage_target: string;
+  owner_agent: string;
+  status: MilestoneStatus;
+  blocker: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface LaunchPlanResult {
+  target_stage: string;
+  current_stage_assessment: string;
+  critical_path: string;
+  confidence: number;
+  milestones: Milestone[];
+}
+
+export function getMilestones(companyId: string) {
+  return fetchJSON<Milestone[]>(`/companies/${encodeURIComponent(companyId)}/milestones`);
+}
+
+/** The Chief of Staff plans the route to the company's next stage. */
+export function generateLaunchPlan(companyId: string) {
+  return fetchJSON<LaunchPlanResult>(`/companies/${encodeURIComponent(companyId)}/launch-plan`, {
+    method: "POST",
+  });
+}
+
+export function setMilestoneStatus(
+  companyId: string,
+  milestoneId: string,
+  status: MilestoneStatus,
+  blocker = ""
+) {
+  return fetchJSON<Milestone>(
+    `/companies/${encodeURIComponent(companyId)}/milestones/${encodeURIComponent(
+      milestoneId
+    )}/status`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, blocker }),
+    }
+  );
+}
+
 export interface Approval {
   id: string;
   company_id: string | null;
