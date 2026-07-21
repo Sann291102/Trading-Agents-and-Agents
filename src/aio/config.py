@@ -22,11 +22,21 @@ class Settings(BaseSettings):
     nvidia_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
 
+    # Any OpenAI-compatible chat-completions endpoint (OmniRoute, OpenRouter,
+    # a local vLLM/Ollama server, ...) -- used when llm_provider ==
+    # "openai_compat". Unlike the NVIDIA client, no vendor-specific
+    # reasoning params are sent, so any standards-compliant router works.
+    # See llm/openai_compat_client.py.
+    openai_compat_api_key: str = ""
+    openai_compat_model: str = ""
+    openai_compat_base_url: str = ""
+
     # "anthropic" (default, real Claude calls), "nvidia" (real calls against
-    # NVIDIA's hosted API, see above), or "demo" (deterministic canned
-    # responses -- see llm/demo_client.py). Lets the real event pipeline /
-    # frontend be verified end-to-end without a paid API key; production
-    # deployments should leave this at "anthropic".
+    # NVIDIA's hosted API, see above), "openai_compat" (any OpenAI-compatible
+    # router, see above), or "demo" (deterministic canned responses -- see
+    # llm/demo_client.py). Lets the real event pipeline / frontend be
+    # verified end-to-end without a paid API key; production deployments
+    # should leave this at "anthropic".
     llm_provider: str = "anthropic"
 
     database_url: str = "postgresql+psycopg2://aio:aio@localhost:5432/aio"

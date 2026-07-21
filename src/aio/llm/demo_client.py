@@ -388,6 +388,96 @@ def _code_integrator(user: str) -> str:
     )
 
 
+def _market_director(user: str) -> str:
+    return "APPROVE. Excellent synthesis."
+
+def _research_planner(user: str) -> str:
+    return json.dumps({
+        "goal": _goal_snippet(user),
+        "tasks": [
+            {
+                "agent_role": "Index Research Agent",
+                "objective": "Analyze major indices",
+                "required_outputs": ["Support levels", "Resistance levels"]
+            }
+        ],
+        "target_sectors": ["IT", "Banking"],
+        "target_indices": ["Nifty 50"],
+        "confidence": 0.85,
+        "reasoning_summary": "Derived from user goal."
+    })
+
+def _index_research(user: str) -> str:
+    return json.dumps({
+        "index_name": "Nifty 50",
+        "current_status": "Bullish",
+        "key_drivers": ["Banking sector rally"],
+        "corporate_actions": [],
+        "support_resistance_levels": {"support_1": 24000.0, "resistance_1": 25000.0},
+        "confidence": 0.8,
+        "reasoning_summary": "Mock index report."
+    })
+
+def _live_market(user: str) -> str:
+    return json.dumps({
+        "market_breadth": "positive",
+        "option_chain_summary": "Support at 24500",
+        "vix_status": "falling",
+        "sector_rotation": ["IT to Banking"],
+        "key_observations": ["High volume in midcaps"],
+        "confidence": 0.75,
+        "reasoning_summary": "Mock live market report."
+    })
+
+def _market_psychology(user: str) -> str:
+    return json.dumps({
+        "retail_sentiment": "Bullish",
+        "institutional_sentiment": "Cautious",
+        "fear_greed_index_proxy": 0.7,
+        "dominant_narratives": ["Buy the dip"],
+        "confidence": 0.7,
+        "reasoning_summary": "Mock psychology report."
+    })
+
+def _institutional_flow(user: str) -> str:
+    return json.dumps({
+        "fii_activity": "Buy",
+        "dii_activity": "Sell",
+        "notable_block_deals": ["HDFC Bank"],
+        "accumulation_distribution_zones": ["24000"],
+        "confidence": 0.82,
+        "reasoning_summary": "Mock flow report."
+    })
+
+def _macro_research(user: str) -> str:
+    return json.dumps({
+        "global_cues": ["US markets up"],
+        "domestic_indicators": ["GDP growth strong"],
+        "rbi_policy_stance": "Neutral",
+        "currency_commodity_impact": "INR stable, oil falling",
+        "confidence": 0.85,
+        "reasoning_summary": "Mock macro report."
+    })
+
+def _market_memory(user: str) -> str:
+    return json.dumps({
+        "historical_similarities": ["2017 bull run"],
+        "past_regimes": ["Low volatility bull"],
+        "recurring_patterns": ["Pre-election rally"],
+        "confidence": 0.77,
+        "reasoning_summary": "Mock memory report."
+    })
+
+def _research_validation(user: str) -> str:
+    return json.dumps({
+        "executive_summary": "The market is in a bullish regime with strong FII buying.",
+        "synthesis": "Target banking stocks on dips.",
+        "key_risks": ["Global recession"],
+        "actionable_insights": ["Accumulate banking stocks"],
+        "confidence": 0.9,
+        "reasoning_summary": "Mock validation report."
+    })
+
 _ROLE_HANDLERS: dict[str, callable] = {
     **_HANDLERS,
     "Research Coordinator": _research_coordinator,
@@ -395,7 +485,102 @@ _ROLE_HANDLERS: dict[str, callable] = {
     "Queen Coordinator": _queen_coordinator,
     "Production Validator": _production_validator,
     "Code Integrator": _code_integrator,
+    "Market Director": _market_director,
+    "Research Planner": _research_planner,
+    "Index Research Agent": _index_research,
+    "Live Market Context Agent": _live_market,
+    "Market Psychology Agent": _market_psychology,
+    "Institutional Flow Agent": _institutional_flow,
+    "Macro Research Agent": _macro_research,
+    "Market Memory Agent": _market_memory,
+    "Research Validation Agent": _research_validation,
 }
+
+
+def _chief_of_staff(user: str) -> str:
+    return json.dumps(
+        {
+            "confidence": 0.8,
+            "reasoning_summary": "Composed from the company snapshot provided in context.",
+            "headline": "Business steady; one decision pending and metrics need a refresh.",
+            "business_health": "stable",
+            "summary": (
+                "Operations are stable across the connected companies. The most "
+                "recent metric snapshot is the source of truth for revenue and "
+                "customers; keep it current so briefings stay grounded. Clear "
+                "any pending approvals to unblock the teams."
+            ),
+            "priorities": [
+                {
+                    "title": "Decide pending approvals",
+                    "why_now": "Teams are blocked until the founder decides",
+                    "owner_agent": "Chief of Staff",
+                    "impact": "high",
+                },
+                {
+                    "title": "Record this month's metric snapshot",
+                    "why_now": "Briefings degrade without fresh numbers",
+                    "owner_agent": "Business Analyst",
+                    "impact": "medium",
+                },
+            ],
+            "risks": [
+                {
+                    "title": "Stale metrics hide churn or burn changes",
+                    "severity": "medium",
+                    "mitigation": "Monthly snapshot cadence owned by the Business Analyst",
+                }
+            ],
+            "opportunities": ["Automate metric collection via connectors"],
+        }
+    )
+
+
+def _executive_assistant(user: str) -> str:
+    if "Greet the founder" in user:
+        return json.dumps(
+            {
+                "reply": (
+                    "Welcome back. I'm across the numbers and the desk is in "
+                    "order — say the word and I'll pull up any company, or "
+                    "compose today's briefing."
+                ),
+                "suggested_actions": [
+                    "Generate today's executive briefing",
+                    "Review pending approvals",
+                ],
+            }
+        )
+    return json.dumps(
+        {
+            "reply": (
+                "Understood. Based on the current business snapshot, here is "
+                "where things stand — and I've kept the conversation so far "
+                "in mind. Anything specific you want me to hand to a director?"
+            ),
+            "suggested_actions": ["Ask the Business Analyst to dig into the latest metrics"],
+        }
+    )
+
+
+def _business_agent_handler(system: str):
+    """Business-roster prompts all open with 'You are the <role>' -- match
+    on the raw system prompt so demo mode covers the whole Executive
+    Business OS. Imported lazily for the same reason as ruflo_role_names."""
+    from aio.agents.business import BUSINESS_AGENT_CLASSES
+
+    for cls in BUSINESS_AGENT_CLASSES:
+        if system.startswith(f"You are the {cls.role}"):
+            if cls.role == "Chief of Staff" and "JSON schema" in system:
+                return _chief_of_staff
+            if cls.role == "Executive Assistant" and "JSON schema" in system:
+                return _executive_assistant
+            return lambda user, role=cls.role: (
+                f"[{role} — demo output]\n"
+                f"Actioned: {_goal_snippet(user, 120)}\n"
+                "Grounded in the business context provided; no blocking issues."
+            )
+    return None
 
 
 class DemoAnthropicClient:
@@ -407,6 +592,9 @@ class DemoAnthropicClient:
         handler = _ROLE_HANDLERS.get(role)
         if handler is not None:
             return handler(user)
+        business_handler = _business_agent_handler(system)
+        if business_handler is not None:
+            return business_handler(user)
         # Any other ruflo-imported specialist gets the generic worker
         # deliverable. Imported lazily: aio.llm must stay importable
         # without the agents package (and vice versa) at module load.

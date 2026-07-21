@@ -161,6 +161,159 @@ export function askBrain(message: string) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Executive Business OS -- companies, metrics, approvals, briefing, assistant
+// ---------------------------------------------------------------------------
+
+export interface Company {
+  id: string;
+  name: string;
+  description: string;
+  industry: string;
+  stage: string;
+  website: string;
+  created_at: string;
+}
+
+export interface BusinessMetricSnapshot {
+  id: string;
+  company_id: string;
+  mrr: number;
+  revenue_this_month: number;
+  customers: number;
+  new_customers_this_month: number;
+  churned_customers_this_month: number;
+  active_users: number;
+  support_open_tickets: number;
+  marketing_spend_this_month: number;
+  sales_pipeline_value: number;
+  cash_balance: number;
+  burn_rate_monthly: number;
+  notes: string;
+  recorded_at: string;
+}
+
+export interface Approval {
+  id: string;
+  company_id: string | null;
+  title: string;
+  detail: string;
+  requested_by: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface PriorityItem {
+  title: string;
+  why_now: string;
+  owner_agent: string;
+  impact: "high" | "medium" | "low";
+}
+
+export interface BusinessRisk {
+  title: string;
+  severity: "critical" | "high" | "medium" | "low";
+  mitigation: string;
+}
+
+export interface ExecutiveBriefing {
+  confidence: number;
+  reasoning_summary: string;
+  headline: string;
+  business_health: "strong" | "stable" | "warning" | "critical";
+  summary: string;
+  priorities: PriorityItem[];
+  risks: BusinessRisk[];
+  opportunities: string[];
+  generated_at: string;
+}
+
+export interface AssistantReply {
+  reply: string;
+  suggested_actions: string[];
+}
+
+export interface ConversationTurn {
+  who: "founder" | "jarvis";
+  text: string;
+}
+
+export function getCompanies() {
+  return fetchJSON<Company[]>("/companies");
+}
+
+export function getCompanyMetrics(companyId: string, limit = 12) {
+  return fetchJSON<BusinessMetricSnapshot[]>(
+    `/companies/${encodeURIComponent(companyId)}/metrics?limit=${limit}`
+  );
+}
+
+export function recordCompanyMetrics(
+  companyId: string,
+  metrics: Partial<Omit<BusinessMetricSnapshot, "id" | "company_id" | "recorded_at">>
+) {
+  return fetchJSON<BusinessMetricSnapshot>(
+    `/companies/${encodeURIComponent(companyId)}/metrics`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(metrics),
+    }
+  );
+}
+
+export function getApprovals(status: "pending" | "approved" | "rejected" | "" = "pending") {
+  return fetchJSON<Approval[]>(`/approvals?status=${status}`);
+}
+
+export function createApproval(title: string, detail = "", companyId: string | null = null) {
+  return fetchJSON<Approval>("/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, detail, company_id: companyId }),
+  });
+}
+
+export function decideApproval(approvalId: string, decision: "approved" | "rejected") {
+  return fetchJSON<Approval>(`/approvals/${encodeURIComponent(approvalId)}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
+  });
+}
+
+/**
+ * The Chief of Staff composes today's executive briefing from real company
+ * metric snapshots + pending approvals. Fresh LLM synthesis per call.
+ */
+export function generateBriefing() {
+  return fetchJSON<ExecutiveBriefing>("/briefing", { method: "POST" });
+}
+
+/**
+ * One conversational turn with the Executive Assistant -- the voice-first
+ * path. Grounded server-side in the live business snapshot + memory; the
+ * conversation so far travels with each call so replies stay contextual.
+ */
+export function askAssistant(message: string, history: ConversationTurn[] = []) {
+  return fetchJSON<AssistantReply>("/assistant", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, history }),
+  });
+}
+
+/** JARVIS's spoken greeting when the founder opens the app. */
+export function greetAssistant() {
+  return fetchJSON<AssistantReply>("/assistant/greet", { method: "POST" });
+}
+
+/** The persisted founder <-> JARVIS conversation tail, oldest first. */
+export function getAssistantHistory(limit = 30) {
+  return fetchJSON<ConversationTurn[]>(`/assistant/history?limit=${limit}`);
+}
+
 export interface AuthResponse {
   token: string;
 }

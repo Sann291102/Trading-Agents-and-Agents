@@ -39,7 +39,7 @@ def extract_role_from_system_prompt(system: str) -> str:
     one correct implementation instead of two copies drifting apart.
     """
     text = system.removeprefix("You are the ")
-    return text.split(",")[0].split(" of ")[0].split(" on ")[0].strip()
+    return text.split(",")[0].split(" of ")[0].split(" on ")[0].split(" in ")[0].strip()
 
 
 def json_response_instruction(model: type[BaseModel]) -> str:

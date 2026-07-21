@@ -23,4 +23,6 @@ EventType = Literal[
     "deployment_finished",
     "workflow_failed",
     "workflow_cancelled",
+    "os_started",
+    "living_market_state_updated",
 ]

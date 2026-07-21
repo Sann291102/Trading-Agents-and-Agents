@@ -4,7 +4,7 @@ from aio.agents.parsing import json_response_instruction
 from aio.models.product import BusinessRequirementsDocument
 from aio.models.research import ResearchReport
 
-from .base import Agent
+from ..base import Agent
 
 
 class ProductManagerAgent(Agent):

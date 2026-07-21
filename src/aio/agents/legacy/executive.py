@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aio.models.research import ResearchReport
 
-from .base import Agent
+from ..base import Agent
 
 
 class ExecutiveAgent(Agent):

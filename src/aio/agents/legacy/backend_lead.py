@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aio.models.product import BusinessRequirementsDocument
 
-from .base import Agent
+from ..base import Agent
 
 
 class BackendLeadAgent(Agent):

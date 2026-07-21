@@ -4,7 +4,7 @@ validation -- exercised end-to-end on the demo LLM client (no network)."""
 from aio.agents import RUFLO_AGENT_CLASSES, all_agent_classes, ruflo_role_names
 from aio.agents.parsing import extract_role_from_system_prompt
 from aio.llm.demo_client import DemoAnthropicClient
-from aio.orchestration.graph import run_organization
+from aio.orchestration.graph import run_legacy_organization
 
 
 def test_ruflo_agents_are_registered():
@@ -25,7 +25,7 @@ def test_ruflo_prompts_declare_their_own_role():
 
 
 def test_run_organization_runs_swarm_after_approval():
-    result = run_organization(
+    result = run_legacy_organization(
         goal="Build a paper-trading platform for the Indian stock market",
         llm=DemoAnthropicClient(),
         persist=False,
@@ -47,7 +47,7 @@ def test_run_organization_runs_swarm_after_approval():
 
 
 def test_swarm_can_be_disabled():
-    result = run_organization(
+    result = run_legacy_organization(
         goal="Build a paper-trading platform for the Indian stock market",
         llm=DemoAnthropicClient(),
         persist=False,

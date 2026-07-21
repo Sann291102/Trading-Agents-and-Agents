@@ -1,7 +1,7 @@
 """Cooperative mission cancellation -- see orchestration/cancellation.py.
 
 The critical property under test: once a cancel is requested for a
-project_id, `run_organization` must raise before making even one more LLM
+project_id, `run_legacy_organization` must raise before making even one more LLM
 call. `ExplodingClient.complete` asserts if it's ever invoked, so these
 tests prove "stops spending tokens", not just "eventually returns" -- with
 zero real network calls, matching the project's cost-free test conventions.
@@ -14,7 +14,7 @@ import pytest
 from aio.events.bus import event_bus
 from aio.orchestration import cancellation
 from aio.orchestration.cancellation import MissionCancelled
-from aio.orchestration.graph import run_organization
+from aio.orchestration.graph import run_legacy_organization
 
 
 class ExplodingClient:
@@ -36,7 +36,7 @@ def test_registry_roundtrip():
 def test_register_is_idempotent_and_does_not_clear_a_pending_cancel():
     """Guards the exact race api/main.py's create_project relies on: the
     HTTP handler registers synchronously before returning project_id to the
-    caller, then run_organization registers again once its background
+    caller, then run_legacy_organization registers again once its background
     thread starts -- the second call must not reset an already-set Event."""
     project_id = str(uuid.uuid4())
     cancellation.register(project_id)
@@ -56,7 +56,7 @@ def test_run_organization_stops_at_the_first_agent_boundary_once_cancelled():
     cancellation.request_cancel(project_id)
 
     with pytest.raises(MissionCancelled):
-        run_organization(
+        run_legacy_organization(
             goal="Launch a clinic scheduling tool",
             llm=ExplodingClient(),
             persist=False,

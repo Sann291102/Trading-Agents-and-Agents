@@ -30,3 +30,10 @@ def test_nemotron_keeps_reasoning_budget():
     body = _client("nvidia/nemotron-3-ultra-550b-a55b")._extra_body(4096)
     assert body["reasoning_budget"] == 4096
     assert body["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_mistral_sends_only_reasoning_effort():
+    """Mistral 400s on reasoning_budget AND chat_template_kwargs; it takes
+    reasoning_effort, and only 'none'/'high' are accepted (verified live)."""
+    body = _client("mistralai/mistral-medium-3.5-128b")._extra_body(4096)
+    assert body == {"reasoning_effort": "none"}

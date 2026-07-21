@@ -20,7 +20,7 @@ from aio.llm.demo_client import DemoAnthropicClient
 from aio.orchestration.graph import (
     resumable_goal,
     resume_organization,
-    run_organization,
+    run_legacy_organization,
 )
 
 
@@ -48,7 +48,7 @@ def test_failed_mission_resumes_from_checkpoint_without_rerunning_completed_node
     goal = "Build an internal tool for tracking customer feedback"
 
     with pytest.raises(RuntimeError, match="simulated provider failure"):
-        run_organization(goal, llm=llm, persist=False, swarm=False, project_id=project_id)
+        run_legacy_organization(goal, llm=llm, persist=False, swarm=False, project_id=project_id)
 
     calls_at_failure = llm.calls
     assert calls_at_failure == 9  # 8 completed nodes + the failed product call

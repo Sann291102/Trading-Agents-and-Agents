@@ -24,7 +24,10 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
 from aio.agents.registry import agent_status_tracker, all_agent_classes
+from aio.agents.business import ChiefOfStaffAgent, ExecutiveAssistantAgent
 from aio.auth import AuthService, InvalidCredentials, UsernameTaken
+from aio.business import BusinessService
+from aio.models.business import Approval, BusinessMetricSnapshot, Company, ConversationTurn
 from aio.config import settings
 from aio.db.models import User
 from aio.events.bus import event_bus
@@ -35,9 +38,11 @@ from aio.memory.service import MemoryService
 from aio.observability.logging_setup import setup_logging
 from aio.orchestration import cancellation
 from aio.orchestration.cancellation import MissionCancelled
-from aio.orchestration.graph import resumable_goal, resume_organization, run_organization
+from aio.orchestration.graph import resumable_goal, LangGraphOrchestrator
 from aio.preview import preview_manager
 from aio.preview.manager import _resolve as _resolve_preview_path
+from aio.os.digital_twin import get_digital_twin
+from aio.os.kernel import get_kernel
 
 # At import time, not in lifespan: uvicorn imports this module before
 # serving, and agent/module loggers must be capturing from the first line.
@@ -56,15 +61,27 @@ async def lifespan(app: FastAPI):
     memory.init_schema()
     auth = AuthService()
     auth.init_schema()
+    business = BusinessService()
+    business.init_schema()
+    app.state.business = business
     app.state.long_term = long_term
     app.state.semantic = semantic
     app.state.memory = memory
     app.state.auth = auth
+    app.state.orchestrator = LangGraphOrchestrator()
     # Every OrgEvent published anywhere in the process (agents, graph
     # nodes, memory writes) must reach SSE subscribers on *this* loop --
     # see events/bus.py's module docstring for why this bind is required.
     event_bus.bind_loop(asyncio.get_running_loop())
+    
+    # Start OS Kernel background intelligence loop
+    kernel = get_kernel()
+    kernel.start_background_intelligence()
+    
     yield
+    
+    # Stop OS Kernel background intelligence loop
+    kernel.stop_background_intelligence()
     # Never let a `next dev` preview child outlive this process (uvicorn
     # --reload restarts, Ctrl-C, container stop).
     preview_manager.stop_all()
@@ -127,6 +144,7 @@ def _resolve_preview_dir(project_id: str):
 _PROVIDER_MODEL = {
     "anthropic": lambda: settings.anthropic_model,
     "nvidia": lambda: settings.nvidia_model,
+    "openai_compat": lambda: settings.openai_compat_model,
 }
 
 
@@ -261,7 +279,7 @@ async def stream_events():
 
 def _run_mission_in_background(goal: str, project_id: str) -> None:
     try:
-        run_organization(
+        app.state.orchestrator.run(
             goal,
             long_term=app.state.long_term,
             semantic=app.state.semantic,
@@ -302,7 +320,7 @@ def create_project(
 
 def _resume_mission_in_background(project_id: str) -> None:
     try:
-        resume_organization(
+        app.state.orchestrator.resume(
             project_id,
             long_term=app.state.long_term,
             semantic=app.state.semantic,
@@ -422,6 +440,13 @@ def list_memory_entries(limit: int = 50, user: User = Depends(get_current_user))
     return [entry.model_dump(mode="json") for entry in entries]
 
 
+@app.get("/digital-twin")
+def get_digital_twin_state(user: User = Depends(get_current_user)) -> dict:
+    """The read-only state of the living market model maintained by the OS kernel."""
+    twin = get_digital_twin()
+    return twin.model_dump(mode="json")
+
+
 @app.get("/execution-logs")
 def list_execution_logs(limit: int = 100, user: User = Depends(get_current_user)) -> list[dict]:
     logs = app.state.long_term.list_execution_logs(limit=limit)
@@ -481,3 +506,199 @@ def chat(request: ChatRequest, user: User = Depends(get_current_user)) -> ChatRe
         max_tokens=1024,
     )
     return ChatResponse(reply=reply)
+
+
+# ---------------------------------------------------------------------------
+# Executive Business OS -- companies, metrics, approvals, briefing, assistant
+# ---------------------------------------------------------------------------
+
+
+class CompanyCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    industry: str = ""
+    stage: str = "operating"
+    website: str = ""
+
+
+@app.get("/companies")
+def list_companies(user: User = Depends(get_current_user)) -> list[dict]:
+    """Every company JARVIS operates for the founder (TradeW is seeded)."""
+    return [c.model_dump(mode="json") for c in app.state.business.list_companies()]
+
+
+@app.post("/companies", status_code=201)
+def create_company(request: CompanyCreateRequest, user: User = Depends(get_current_user)) -> dict:
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="company name is required")
+    company = app.state.business.create_company(
+        Company(
+            name=name,
+            description=request.description,
+            industry=request.industry,
+            stage=request.stage,
+            website=request.website,
+        )
+    )
+    return company.model_dump(mode="json")
+
+
+class MetricsRequest(BaseModel):
+    mrr: float = 0.0
+    revenue_this_month: float = 0.0
+    customers: int = 0
+    new_customers_this_month: int = 0
+    churned_customers_this_month: int = 0
+    active_users: int = 0
+    support_open_tickets: int = 0
+    marketing_spend_this_month: float = 0.0
+    sales_pipeline_value: float = 0.0
+    cash_balance: float = 0.0
+    burn_rate_monthly: float = 0.0
+    notes: str = ""
+
+
+@app.get("/companies/{company_id}/metrics")
+def list_company_metrics(
+    company_id: str, limit: int = 12, user: User = Depends(get_current_user)
+) -> list[dict]:
+    """Metric snapshots for one company, newest first ([0] = current state)."""
+    if app.state.business.get_company(company_id) is None:
+        raise HTTPException(status_code=404, detail="unknown company")
+    return [
+        s.model_dump(mode="json") for s in app.state.business.list_metrics(company_id, limit=limit)
+    ]
+
+
+@app.post("/companies/{company_id}/metrics", status_code=201)
+def record_company_metrics(
+    company_id: str, request: MetricsRequest, user: User = Depends(get_current_user)
+) -> dict:
+    if app.state.business.get_company(company_id) is None:
+        raise HTTPException(status_code=404, detail="unknown company")
+    snapshot = app.state.business.record_metrics(
+        BusinessMetricSnapshot(company_id=company_id, **request.model_dump())
+    )
+    return snapshot.model_dump(mode="json")
+
+
+class ApprovalCreateRequest(BaseModel):
+    title: str
+    detail: str = ""
+    company_id: str | None = None
+    requested_by: str = "Founder"
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str  # "approved" | "rejected"
+
+
+@app.get("/approvals")
+def list_approvals(
+    status: str | None = "pending", limit: int = 50, user: User = Depends(get_current_user)
+) -> list[dict]:
+    return [
+        a.model_dump(mode="json")
+        for a in app.state.business.list_approvals(status=status or None, limit=limit)
+    ]
+
+
+@app.post("/approvals", status_code=201)
+def create_approval(
+    request: ApprovalCreateRequest, user: User = Depends(get_current_user)
+) -> dict:
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="approval title is required")
+    approval = app.state.business.create_approval(
+        Approval(
+            title=title,
+            detail=request.detail,
+            company_id=request.company_id,
+            requested_by=request.requested_by,
+        )
+    )
+    return approval.model_dump(mode="json")
+
+
+@app.post("/approvals/{approval_id}/decision")
+def decide_approval(
+    approval_id: str, request: ApprovalDecisionRequest, user: User = Depends(get_current_user)
+) -> dict:
+    try:
+        approval = app.state.business.decide_approval(approval_id, request.decision)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="decision must be 'approved' or 'rejected'"
+        ) from None
+    if approval is None:
+        raise HTTPException(status_code=404, detail="unknown approval")
+    return approval.model_dump(mode="json")
+
+
+@app.post("/briefing")
+def generate_briefing(user: User = Depends(get_current_user)) -> dict:
+    """The Chief of Staff composes today's executive briefing from the real
+    company snapshot (latest metrics + pending approvals). POST, not GET --
+    each call is a fresh LLM synthesis, not a cached read."""
+    context = app.state.business.snapshot_for_briefing()
+    chief = ChiefOfStaffAgent(build_default_llm(), long_term=app.state.long_term)
+    briefing = chief.briefing(context)
+    return briefing.model_dump(mode="json")
+
+
+class AssistantRequest(BaseModel):
+    message: str
+    history: list[ConversationTurn] = []
+
+
+@app.post("/assistant")
+def assistant(request: AssistantRequest, user: User = Depends(get_current_user)) -> dict:
+    """The voice-first Executive Assistant: one conversational turn grounded
+    in the live business snapshot, semantic memory of past work, and the
+    conversation so far (sent back by the client each turn)."""
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    context = app.state.business.snapshot_for_briefing()
+    hits = app.state.semantic.search_similar(message, top_k=3)
+    memory_context = "\n".join(
+        f"- {hit['goal']}: {hit['summary']}" for hit in hits if hit.get("summary")
+    )
+    if memory_context:
+        context = f"{context}\n\nRelevant organizational memory:\n{memory_context}"
+    # Client-supplied history wins (it has the freshest turns); a client
+    # with none (new device, cleared session) falls back to the persisted
+    # conversation so JARVIS still remembers.
+    history = request.history or app.state.business.recent_turns(limit=12)
+    ea = ExecutiveAssistantAgent(build_default_llm(), long_term=app.state.long_term)
+    reply = ea.converse(message, context, history=history)
+    app.state.business.save_turn(ConversationTurn(who="founder", text=message))
+    app.state.business.save_turn(ConversationTurn(who="jarvis", text=reply.reply))
+    return reply.model_dump(mode="json")
+
+
+@app.get("/assistant/history")
+def assistant_history(limit: int = 30, user: User = Depends(get_current_user)) -> list[dict]:
+    """The persisted founder <-> JARVIS conversation tail, oldest first --
+    the frontend restores its transcript from this on load."""
+    return [t.model_dump(mode="json") for t in app.state.business.recent_turns(limit=limit)]
+
+
+@app.post("/assistant/greet")
+def assistant_greet(user: User = Depends(get_current_user)) -> dict:
+    """JARVIS's spoken greeting when the founder opens the app -- grounded
+    in the live company snapshot and the recent conversation, so it can
+    pick up where things left off."""
+    context = app.state.business.snapshot_for_briefing()
+    recent = app.state.business.recent_turns(limit=6)
+    if recent:
+        transcript = "\n".join(
+            f"{'Founder' if turn.who == 'founder' else 'JARVIS'}: {turn.text}" for turn in recent
+        )
+        context = f"{context}\n\nRecent conversation (pick up where this left off):\n{transcript}"
+    ea = ExecutiveAssistantAgent(build_default_llm(), long_term=app.state.long_term)
+    greeting = ea.greet(context)
+    app.state.business.save_turn(ConversationTurn(who="jarvis", text=greeting.reply))
+    return greeting.model_dump(mode="json")

@@ -24,7 +24,7 @@ from aio.models.research import (
     ResearchReport,
     TechnicalResearchReport,
 )
-from aio.orchestration.graph import run_organization
+from aio.orchestration.graph import run_legacy_organization
 
 GOAL = "Launch a customer feedback widget for a SaaS dashboard"
 
@@ -114,7 +114,7 @@ def test_full_pipeline_runs_end_to_end_with_demo_client(tmp_path):
     memory = MemoryService(database_url=db_url)
     memory.init_schema()
 
-    result = run_organization(
+    result = run_legacy_organization(
         GOAL,
         llm=DemoAnthropicClient(),
         long_term=long_term,

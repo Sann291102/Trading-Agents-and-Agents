@@ -1,6 +1,7 @@
 from .anthropic_client import AnthropicClient
 from .demo_client import DemoAnthropicClient
 from .nvidia_client import NvidiaClient
+from .openai_compat_client import OpenAICompatClient
 from .resilient import ResilientLLMClient
 
 
@@ -15,6 +16,8 @@ def _build_raw_llm():
         return DemoAnthropicClient()
     if settings.llm_provider == "nvidia":
         return NvidiaClient()
+    if settings.llm_provider == "openai_compat":
+        return OpenAICompatClient()
     return AnthropicClient()
 
 
@@ -31,6 +34,7 @@ __all__ = [
     "AnthropicClient",
     "DemoAnthropicClient",
     "NvidiaClient",
+    "OpenAICompatClient",
     "ResilientLLMClient",
     "build_default_llm",
 ]

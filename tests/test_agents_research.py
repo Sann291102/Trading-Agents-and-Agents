@@ -2,12 +2,12 @@ import json
 
 import pytest
 
-from aio.agents.competitor_intelligence import CompetitorIntelligenceAgent
-from aio.agents.domain_expert import DomainExpertAgent
-from aio.agents.market_research import MarketResearchAgent
+from aio.agents.legacy.competitor_intelligence import CompetitorIntelligenceAgent
+from aio.agents.legacy.domain_expert import DomainExpertAgent
+from aio.agents.legacy.market_research import MarketResearchAgent
 from aio.agents.parsing import AgentOutputParseError
-from aio.agents.research_coordinator import ResearchCoordinatorAgent
-from aio.agents.technical_research import TechnicalResearchAgent
+from aio.agents.legacy.research_coordinator import ResearchCoordinatorAgent
+from aio.agents.legacy.technical_research import TechnicalResearchAgent
 from aio.models.research import (
     CompetitorMatrix,
     DomainKnowledgeReport,

@@ -35,6 +35,8 @@ import logging
 import uuid
 from typing import TypedDict
 
+from aio.orchestration.base import OrchestratorInterface
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
@@ -138,7 +140,7 @@ def _excerpt(text: str, limit: int = 160) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def build_graph(
+def build_legacy_graph(
     ceo: ExecutiveAgent,
     research_coordinator: ResearchCoordinatorAgent,
     domain_expert: DomainExpertAgent,
@@ -383,7 +385,7 @@ def build_graph(
     return graph.compile(checkpointer=_CHECKPOINTER)
 
 
-def run_organization(
+def run_legacy_organization(
     goal: str,
     llm: AnthropicClient | None = None,
     long_term: LongTermMemory | None = None,
@@ -433,7 +435,7 @@ def run_organization(
         else None
     )
 
-    app = build_graph(
+    app = build_legacy_graph(
         ceo,
         research_coordinator,
         domain_expert,
@@ -544,7 +546,7 @@ def resume_organization(project_id: str, **kwargs) -> OrgState:
     checkpoint thread -- completed nodes are not re-executed; the failed
     node retries on the fresh provider. Raises KeyError if the id isn't
     resumable (unknown, still running, cancelled, or already completed).
-    `kwargs` pass through to run_organization (memory backends, swarm flag)
+    `kwargs` pass through to run_legacy_organization (memory backends, swarm flag)
     so the API can hand in the same app.state services it uses for new runs.
     """
     goal = _RESUMABLE.get(project_id)
@@ -560,11 +562,18 @@ def resume_organization(project_id: str, **kwargs) -> OrgState:
         department="Executive",
         message="JARVIS is resuming the mission from its last completed step",
     )
-    return run_organization(goal, project_id=project_id, _resume=True, **kwargs)
+    return run_legacy_organization(goal, project_id=project_id, _resume=True, **kwargs)
 
 
 def _emit_for_project(project_id: str, type_: str, **kwargs) -> None:
     """Like _emit, but for callers running before current_project_id is set
     (resume_organization emits its resuming notice prior to entering
-    run_organization, which is what binds the contextvar)."""
+    run_legacy_organization, which is what binds the contextvar)."""
     event_bus.publish(OrgEvent(type=type_, project_id=project_id, **kwargs))
+
+class LangGraphOrchestrator(OrchestratorInterface):
+    def run(self, goal: str, **kwargs) -> OrgState:
+        return run_legacy_organization(goal, **kwargs)
+
+    def resume(self, project_id: str, **kwargs) -> OrgState:
+        return resume_organization(project_id, **kwargs)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, String, Text, Boolean
+from sqlalchemy import DateTime, Float, Integer, String, Text, Boolean
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -156,3 +156,72 @@ class SessionToken(Base):
     user_id: Mapped[str] = mapped_column(String, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CompanyRecord(Base):
+    """One company JARVIS operates for the founder (TradeW is the first,
+    seeded on startup -- see business/service.py). Additive schema, same
+    shared Base/database as everything else."""
+
+    __tablename__ = "companies"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    industry: Mapped[str] = mapped_column(String, default="")
+    stage: Mapped[str] = mapped_column(String, default="operating")
+    website: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class BusinessMetricRecord(Base):
+    """Point-in-time snapshot of one company's core business numbers --
+    the dashboard reads the latest per company; the Chief of Staff reads
+    the last few to see trend when composing the briefing."""
+
+    __tablename__ = "business_metrics"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    company_id: Mapped[str] = mapped_column(String, index=True)
+    mrr: Mapped[float] = mapped_column(Float, default=0.0)
+    revenue_this_month: Mapped[float] = mapped_column(Float, default=0.0)
+    customers: Mapped[int] = mapped_column(Integer, default=0)
+    new_customers_this_month: Mapped[int] = mapped_column(Integer, default=0)
+    churned_customers_this_month: Mapped[int] = mapped_column(Integer, default=0)
+    active_users: Mapped[int] = mapped_column(Integer, default=0)
+    support_open_tickets: Mapped[int] = mapped_column(Integer, default=0)
+    marketing_spend_this_month: Mapped[float] = mapped_column(Float, default=0.0)
+    sales_pipeline_value: Mapped[float] = mapped_column(Float, default=0.0)
+    cash_balance: Mapped[float] = mapped_column(Float, default=0.0)
+    burn_rate_monthly: Mapped[float] = mapped_column(Float, default=0.0)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ApprovalRecord(Base):
+    """A decision waiting on the founder, raised by business agents and
+    decided from the executive dashboard."""
+
+    __tablename__ = "approvals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    company_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    requested_by: Mapped[str] = mapped_column(String, default="Chief of Staff")
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConversationTurnRecord(Base):
+    """One founder <-> JARVIS exchange from the voice-first assistant.
+    Persisted so JARVIS remembers the conversation across sessions and
+    devices, not just page reloads."""
+
+    __tablename__ = "conversation_turns"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    who: Mapped[str] = mapped_column(String)  # "founder" | "jarvis"
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)

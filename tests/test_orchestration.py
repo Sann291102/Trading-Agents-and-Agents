@@ -4,7 +4,7 @@ from aio.agents.parsing import extract_role_from_system_prompt
 from aio.memory.long_term import LongTermMemory
 from aio.memory.semantic import SemanticMemory
 from aio.memory.service import MemoryService
-from aio.orchestration.graph import run_organization
+from aio.orchestration.graph import run_legacy_organization
 from tests.test_agents_research import (
     COMPETITOR_PAYLOAD,
     DOMAIN_PAYLOAD,
@@ -131,7 +131,7 @@ def _memories(tmp_path):
 def test_run_organization_produces_full_pipeline_and_persists(tmp_path):
     long_term, semantic, memory = _memories(tmp_path)
 
-    result = run_organization(
+    result = run_legacy_organization(
         goal="Launch a clinic scheduling tool",
         llm=FakeAnthropicClient(),
         long_term=long_term,
@@ -202,7 +202,7 @@ def test_run_organization_produces_full_pipeline_and_persists(tmp_path):
 
 
 def test_run_organization_without_persistence_skips_memory():
-    result = run_organization(
+    result = run_legacy_organization(
         goal="Launch a clinic scheduling tool",
         llm=FakeAnthropicClient(),
         persist=False,
