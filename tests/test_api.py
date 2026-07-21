@@ -356,3 +356,55 @@ def test_assistant_greet_and_converse_with_history(monkeypatch, tmp_path):
         del app.state.business
         del app.state.long_term
         del app.state.semantic
+
+
+def test_assistant_executes_an_order_not_just_acknowledges_it(monkeypatch, tmp_path):
+    """JARVIS is an operator: an instruction sent to /assistant must actually
+    run through the action executor, not just be replied to. This is the
+    core of the autonomous-executive milestone -- a spoken/typed order has to
+    produce a real, recorded side effect, not only a conversational reply."""
+    import aio.api.main as main_module
+    from aio.business import BusinessService
+    from aio.llm import DemoAnthropicClient
+
+    monkeypatch.setattr(main_module, "build_default_llm", lambda: DemoAnthropicClient())
+
+    business = BusinessService(database_url=f"sqlite:///{tmp_path}/biz.db")
+    business.init_schema()
+    long_term = LongTermMemory(database_url=f"sqlite:///{tmp_path}/lt.db")
+    long_term.init_schema()
+    semantic = SemanticMemory(location=":memory:", collection="test_assistant_action")
+    semantic.init_collection()
+    memory = MemoryService(database_url=f"sqlite:///{tmp_path}/mem.db")
+    memory.init_schema()
+
+    main_module.app.state.business = business
+    main_module.app.state.long_term = long_term
+    main_module.app.state.semantic = semantic
+    main_module.app.state.memory = memory
+    try:
+        client = _client()
+        response = client.post(
+            "/assistant",
+            json={"message": "Have the Operations Director scope the MVP"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["action"] == "delegate_to_agent"
+        assert body["result"] is not None
+        assert body["result"]["outcome"] == "executed"
+
+        # It must be a real, persisted action run -- not just an in-memory
+        # echo of the response.
+        runs = client.get("/action-runs").json()
+        assert any(r["action"] == "delegate_to_agent" for r in runs)
+
+        # A plain question must NOT trigger an action.
+        question = client.post("/assistant", json={"message": "How are we doing?"})
+        assert question.status_code == 200
+        assert question.json()["action"] == ""
+    finally:
+        del main_module.app.state.business
+        del main_module.app.state.long_term
+        del main_module.app.state.semantic
+        del main_module.app.state.memory

@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import { HudSidebar } from "@/components/mission-control/HudSidebar";
 import { VoiceAssistantBar } from "@/components/executive/VoiceAssistantBar";
+import { ActivityFeed } from "@/components/executive/ActivityFeed";
+import { AutonomyControl } from "@/components/executive/AutonomyControl";
 import {
   decideApproval,
   generateBriefing,
@@ -72,6 +74,15 @@ export default function ExecutiveDashboard() {
         </header>
 
         <VoiceAssistantBar />
+
+        {/* What JARVIS is actually doing comes right after the voice bar --
+            this is the proof that speaking to it performs work, not just a
+            reply. Autonomy sits beside the decisions still waiting on the
+            founder, since both are about how much authority JARVIS holds. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ActivityFeed />
+          <AutonomyControl />
+        </div>
 
         <BriefingPanel />
 

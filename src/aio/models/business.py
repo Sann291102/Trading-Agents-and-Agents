@@ -75,8 +75,13 @@ class BusinessMetricSnapshot(BaseModel):
 
 
 class Approval(BaseModel):
-    """A decision waiting on the founder. Business agents raise these; the
-    dashboard surfaces them; the operator approves or rejects."""
+    """A decision waiting on the founder -- and, when it carries a pending
+    action, the work itself.
+
+    JARVIS proposes sensitive work (anything irreversible, outward-facing, or
+    that spends money) by parking it here with the action name and parameters
+    it intends to run. Approving does not mark a row as read: it executes
+    exactly that action. Rejecting discards it."""
 
     id: str = Field(default_factory=_uuid)
     company_id: str | None = None
@@ -84,8 +89,28 @@ class Approval(BaseModel):
     detail: str = ""
     requested_by: str = "Chief of Staff"
     status: Literal["pending", "approved", "rejected"] = "pending"
+    pending_action: str = Field(default="", description="Action name to run on approval")
+    pending_params_json: str = Field(default="", description="JSON params for that action")
     created_at: datetime = Field(default_factory=_now)
     decided_at: datetime | None = None
+
+    @property
+    def is_executable(self) -> bool:
+        return bool(self.pending_action)
+
+
+class ActionRun(BaseModel):
+    """One thing JARVIS actually did. The audit trail behind the activity
+    feed -- what ran, who triggered it, what came of it."""
+
+    id: str = Field(default_factory=_uuid)
+    action: str
+    actor: str = "JARVIS"
+    params_json: str = ""
+    outcome: Literal["executed", "escalated", "failed", "rejected"] = "executed"
+    summary: str = ""
+    detail: str = ""
+    created_at: datetime = Field(default_factory=_now)
 
 
 class Milestone(BaseModel):
@@ -165,4 +190,20 @@ class ConversationTurn(BaseModel):
 
 class AssistantReply(BaseModel):
     reply: str
+    suggested_actions: list[str] = Field(default_factory=list)
+
+
+class AssistantIntent(BaseModel):
+    """What the founder actually wants from a spoken turn.
+
+    The assistant is an operator, so a turn is not always just conversation:
+    "have the Operations Director scope the MVP" is an instruction to perform
+    work. This is the model's read of which -- `action` names a capability
+    from the live catalog when the founder asked for something to be *done*,
+    and is empty when they were only asking a question.
+    """
+
+    reply: str = Field(..., description="What to say back, spoken-style")
+    action: str = Field(default="", description="Action name to run, or empty for none")
+    params: dict = Field(default_factory=dict, description="Parameters for that action")
     suggested_actions: list[str] = Field(default_factory=list)

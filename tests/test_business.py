@@ -259,6 +259,36 @@ def test_assistant_converse_accepts_history_in_demo_mode():
     assert isinstance(reply.suggested_actions, list)
 
 
+def test_assistant_turns_an_order_into_an_action():
+    """JARVIS is an operator, not a chatbot: telling it to do something must
+    produce a real action to run, not advice about doing it."""
+    ea = ExecutiveAssistantAgent(DemoAnthropicClient())
+    catalog = "- delegate_to_agent (safe): Give a task to a business agent [params: agent_role, task]"
+    intent = ea.act(
+        "Have the Operations Director scope the MVP",
+        "Company: TradeW (building) -- PRE-REVENUE: not launched yet.",
+        catalog,
+    )
+    assert intent.action == "delegate_to_agent"
+    assert intent.params.get("agent_role") == "Operations Director"
+    assert intent.params.get("task")
+    # The task must be the founder's instruction, not the whole prompt.
+    assert "Business context:" not in intent.params["task"]
+    assert intent.reply
+
+
+def test_assistant_answers_a_question_without_acting():
+    """A question is not an order -- answering must not trigger work."""
+    ea = ExecutiveAssistantAgent(DemoAnthropicClient())
+    intent = ea.act(
+        "How are we doing?",
+        "Company: TradeW (building) -- PRE-REVENUE: not launched yet.",
+        "- delegate_to_agent (safe): Give a task to a business agent [params: agent_role, task]",
+    )
+    assert intent.action == ""
+    assert intent.reply
+
+
 def test_assistant_greeting_in_demo_mode():
     ea = ExecutiveAssistantAgent(DemoAnthropicClient())
     greeting = ea.greet("Company: TradeW -- no snapshots yet")

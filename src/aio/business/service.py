@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from aio.config import settings
+import json
+
 from aio.db.models import (
+    ActionRunRecord,
     ApprovalRecord,
     Base,
     BusinessMetricRecord,
@@ -22,6 +25,7 @@ from aio.db.models import (
     MilestoneRecord,
 )
 from aio.models.business import (
+    ActionRun,
     Approval,
     BusinessMetricSnapshot,
     Company,
@@ -55,7 +59,27 @@ class BusinessService:
 
     def init_schema(self) -> None:
         Base.metadata.create_all(self._engine)
+        self._migrate_added_columns()
         self._seed()
+
+    def _migrate_added_columns(self) -> None:
+        """`create_all` only creates tables that do not exist yet -- it never
+        alters an existing table, so a column added to a model after the
+        database was first created (like `Approval.pending_action`) is
+        silently absent until this runs. There is no formal migration system
+        in this vertical slice, and the sqlite dev database is checked into
+        git as local runtime state, so every table that predates a model
+        change needs its own catch-up here rather than crashing the first
+        query that touches the new column."""
+        inspector = inspect(self._engine)
+        if "approvals" not in inspector.get_table_names():
+            return  # a fresh create_all() above already has every column
+        existing = {col["name"] for col in inspector.get_columns("approvals")}
+        with self._engine.begin() as conn:
+            if "pending_action" not in existing:
+                conn.execute(text("ALTER TABLE approvals ADD COLUMN pending_action VARCHAR DEFAULT ''"))
+            if "pending_params_json" not in existing:
+                conn.execute(text("ALTER TABLE approvals ADD COLUMN pending_params_json TEXT DEFAULT ''"))
 
     def _seed(self) -> None:
         with self._Session() as session:
@@ -128,6 +152,11 @@ class BusinessService:
                 stmt = stmt.where(ApprovalRecord.status == status)
             return [_to_approval(r) for r in session.scalars(stmt)]
 
+    def get_approval(self, approval_id: str) -> Approval | None:
+        with self._Session() as session:
+            record = session.get(ApprovalRecord, approval_id)
+            return _to_approval(record) if record is not None else None
+
     def decide_approval(self, approval_id: str, decision: str) -> Approval | None:
         if decision not in ("approved", "rejected"):
             raise ValueError(f"invalid decision {decision!r}")
@@ -140,6 +169,55 @@ class BusinessService:
             session.commit()
             session.refresh(record)
             return _to_approval(record)
+
+    # -- action audit trail -----------------------------------------------
+
+    def record_action_run(
+        self,
+        *,
+        action: str,
+        actor: str,
+        params: dict,
+        outcome: str,
+        summary: str,
+        detail: str = "",
+    ) -> ActionRun:
+        run = ActionRun(
+            action=action,
+            actor=actor,
+            params_json=json.dumps(params, default=str),
+            outcome=outcome,
+            summary=summary,
+            detail=detail,
+        )
+        with self._Session() as session:
+            record = ActionRunRecord(**run.model_dump())
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return _to_action_run(record)
+
+    def list_action_runs(self, limit: int = 50) -> list[ActionRun]:
+        """Newest first -- what JARVIS has been doing, for the activity feed."""
+        with self._Session() as session:
+            stmt = (
+                select(ActionRunRecord)
+                .order_by(ActionRunRecord.created_at.desc(), ActionRunRecord.id)
+                .limit(limit)
+            )
+            return [_to_action_run(r) for r in session.scalars(stmt)]
+
+    def recent_action_summary(self, limit: int = 12) -> str:
+        """What JARVIS already did recently, as planner context. Without this
+        the autonomous loop has no memory of its own work and re-proposes the
+        same action every cycle."""
+        runs = self.list_action_runs(limit=limit)
+        if not runs:
+            return "No actions taken yet."
+        return "\n".join(
+            f"  [{run.created_at:%Y-%m-%d %H:%M}] {run.action} -> {run.outcome}: {run.summary}"
+            for run in reversed(runs)
+        )
 
     # -- milestones (how a pre-revenue company is run) --------------------
 
@@ -336,6 +414,21 @@ def _to_approval(record: ApprovalRecord) -> Approval:
         detail=record.detail,
         requested_by=record.requested_by,
         status=record.status,
+        pending_action=record.pending_action,
+        pending_params_json=record.pending_params_json,
         created_at=_utc(record.created_at),
         decided_at=_utc(record.decided_at) if record.decided_at else None,
+    )
+
+
+def _to_action_run(record: ActionRunRecord) -> ActionRun:
+    return ActionRun(
+        id=record.id,
+        action=record.action,
+        actor=record.actor,
+        params_json=record.params_json,
+        outcome=record.outcome,
+        summary=record.summary,
+        detail=record.detail,
+        created_at=_utc(record.created_at),
     )

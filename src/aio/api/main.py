@@ -12,17 +12,26 @@ produced -- research is now a mandatory stage before Product acts.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import inspect
 import json
 import logging
+import pkgutil
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from functools import partial
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
+from aio.actions.base import ActionContext
+from aio.actions.executor import UnknownAction, execute_action, execute_approved_action
+from aio.actions.registry import all_actions, catalog_for_planner, get_action
 from aio.agents.registry import agent_status_tracker, all_agent_classes
 from aio.agents.business import ChiefOfStaffAgent, ExecutiveAssistantAgent
 from aio.auth import AuthService, InvalidCredentials, UsernameTaken
@@ -58,6 +67,130 @@ setup_logging()
 logger = logging.getLogger("aio.api.main")
 
 
+# ---------------------------------------------------------------------------
+# Action engine plumbing -- one way to build an ActionContext, used by every
+# path that makes JARVIS *do* something (direct invoke, approval, autonomy).
+# ---------------------------------------------------------------------------
+
+
+_action_catalog_loaded = False
+
+
+def _load_action_catalog() -> None:
+    """Actions exist only once their module has been imported (they register
+    via decorator side effect). Importing the catalog package is the intended
+    single hook; the per-module walk is the fallback for a catalog package
+    that does not re-export its modules, so a capability that was written can
+    never be invisible to the API. Runs at most once -- endpoints may call it
+    freely -- and skips a broken module rather than emptying the catalog."""
+    global _action_catalog_loaded
+    if _action_catalog_loaded:
+        return
+    _action_catalog_loaded = True
+    try:
+        catalog = importlib.import_module("aio.actions.catalog")
+    except ImportError:
+        logger.warning("no action catalog importable -- /actions will be empty")
+        return
+    for module in pkgutil.iter_modules(getattr(catalog, "__path__", [])):
+        try:
+            importlib.import_module(f"aio.actions.catalog.{module.name}")
+        except Exception:
+            logger.exception("action catalog module %s failed to import", module.name)
+
+
+def _business_service() -> BusinessService:
+    """The BusinessService factory handed to the kernel and used by every
+    action path. Prefers app.state (tests point it at a temp database) and
+    only builds its own when the lifespan has not run -- an autonomy cycle
+    must never silently operate on a different database than the API."""
+    service = getattr(app.state, "business", None)
+    if service is None:
+        service = BusinessService()
+        service.init_schema()
+    return service
+
+
+def _action_context(actor: str = "JARVIS") -> ActionContext:
+    """Everything an action handler is allowed to touch, assembled the same
+    way for every caller. `actor` is what shows up in the activity feed, so
+    founder-triggered runs are distinguishable from autonomous ones."""
+    return ActionContext(
+        business=_business_service(),
+        actor=actor,
+        long_term=getattr(app.state, "long_term", None),
+        memory=getattr(app.state, "memory", None),
+        semantic=getattr(app.state, "semantic", None),
+    )
+
+
+def _connector_available(name: str | None) -> bool:
+    """An action with no connector requirement is always available; one that
+    needs a connector is only available when that connector is configured."""
+    if not name:
+        return True
+    try:
+        from aio.connectors import connector_available
+    except ImportError:
+        return False
+    return bool(connector_available(name))
+
+
+def _kernel_method(*names: str):
+    """Resolve the first method the kernel actually exposes. The autonomy
+    surface is versioned by what the kernel implements, not by this module
+    guessing -- a kernel without it answers 503 rather than crashing."""
+    kernel = get_kernel()
+    for name in names:
+        method = getattr(kernel, name, None)
+        if callable(method):
+            return method
+    return None
+
+
+def _require_kernel_method(*names: str):
+    method = _kernel_method(*names)
+    if method is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"autonomy kernel exposes none of: {', '.join(names)}",
+        )
+    return method
+
+
+def _parameters(method) -> dict:
+    try:
+        return dict(inspect.signature(method).parameters)
+    except (TypeError, ValueError):  # builtins / C-implemented callables
+        return {}
+
+
+def _configure_kernel() -> None:
+    """Hand the autonomous loop real dependencies. Factories, not instances:
+    a cycle runs off the request path and must build its own service/context
+    at the moment it runs, after the lifespan has wired app.state. Bound by
+    parameter name so this survives the kernel widening its signature, and
+    never fatal -- a kernel that cannot be configured must not stop the API
+    from serving."""
+    configure = _kernel_method("configure")
+    if configure is None:
+        logger.info("kernel has no configure(); autonomy runs with its own defaults")
+        return
+    kwargs = {}
+    for name in _parameters(configure):
+        if "business" in name:
+            kwargs[name] = _business_service
+        elif "context" in name or "action" in name:
+            kwargs[name] = _action_context
+    try:
+        if kwargs:
+            configure(**kwargs)
+        else:
+            configure(_business_service, _action_context)
+    except Exception:
+        logger.exception("could not configure the autonomy kernel")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     long_term = LongTermMemory()
@@ -80,9 +213,14 @@ async def lifespan(app: FastAPI):
     # nodes, memory writes) must reach SSE subscribers on *this* loop --
     # see events/bus.py's module docstring for why this bind is required.
     event_bus.bind_loop(asyncio.get_running_loop())
-    
+
+    # Actions must be registered before the kernel starts choosing between
+    # them, and before the first /actions request.
+    _load_action_catalog()
+
     # Start OS Kernel background intelligence loop
     kernel = get_kernel()
+    _configure_kernel()
     kernel.start_background_intelligence()
     
     yield
@@ -734,6 +872,14 @@ def create_approval(
 def decide_approval(
     approval_id: str, request: ApprovalDecisionRequest, user: User = Depends(get_current_user)
 ) -> dict:
+    """Approving is not marking a row as read: an approval that carries a
+    pending action *performs* that action here, which is the whole point of
+    parking sensitive work as an Approval. Rejecting executes nothing.
+
+    Response shape is backward compatible -- the approval's own fields stay
+    at the top level (the frontend still reads `status`/`id` there), with
+    `approval` mirroring them and `result` carrying the ActionResult (null
+    when the approval was a plain note, or was rejected)."""
     try:
         approval = app.state.business.decide_approval(approval_id, request.decision)
     except ValueError:
@@ -742,7 +888,26 @@ def decide_approval(
         ) from None
     if approval is None:
         raise HTTPException(status_code=404, detail="unknown approval")
-    return approval.model_dump(mode="json")
+
+    payload = approval.model_dump(mode="json")
+    result: dict | None = None
+    if approval.status == "approved" and approval.pending_action:
+        _load_action_catalog()
+        try:
+            action_result = execute_approved_action(approval_id, _action_context(actor="Founder"))
+        except UnknownAction as exc:
+            # The decision itself is already persisted; a stale action name
+            # (renamed/removed since the approval was created) must surface
+            # as a failed run, not roll the decision back into an HTTP error.
+            result = {
+                "outcome": "failed",
+                "summary": f"Approved, but '{approval.pending_action}' is no longer a known action",
+                "detail": str(exc),
+                "data": {},
+            }
+        else:
+            result = action_result.model_dump(mode="json") if action_result else None
+    return {**payload, "approval": payload, "result": result}
 
 
 @app.post("/briefing")
@@ -765,7 +930,16 @@ class AssistantRequest(BaseModel):
 def assistant(request: AssistantRequest, user: User = Depends(get_current_user)) -> dict:
     """The voice-first Executive Assistant: one conversational turn grounded
     in the live business snapshot, semantic memory of past work, and the
-    conversation so far (sent back by the client each turn)."""
+    conversation so far (sent back by the client each turn).
+
+    JARVIS is an operator, not a chatbot: when the founder gives an
+    instruction rather than asks a question, `ExecutiveAssistantAgent.act`
+    names a real action to run, and this endpoint actually runs it through
+    the same executor everything else uses -- a spoken order performs work,
+    it does not just get acknowledged. `pre_approved` is deliberately never
+    passed: a SAFE action still runs immediately, but anything SENSITIVE
+    escalates to an Approval exactly as it would from the autonomous loop, so
+    a spoken instruction alone can never trigger irreversible work."""
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
@@ -780,11 +954,41 @@ def assistant(request: AssistantRequest, user: User = Depends(get_current_user))
     # with none (new device, cleared session) falls back to the persisted
     # conversation so JARVIS still remembers.
     history = request.history or app.state.business.recent_turns(limit=12)
+
+    _load_action_catalog()
     ea = ExecutiveAssistantAgent(build_default_llm(), long_term=app.state.long_term)
-    reply = ea.converse(message, context, history=history)
+    intent = ea.act(message, context, catalog_for_planner(), history=history)
+
+    result_payload: dict | None = None
+    if intent.action:
+        if get_action(intent.action) is None:
+            # The model named an action that does not exist in the live
+            # catalog -- treat it as "no action" rather than 404ing the turn;
+            # the founder still gets a reply.
+            logger.warning("assistant chose unknown action %r -- ignored", intent.action)
+        else:
+            try:
+                action_result = execute_action(
+                    intent.action, intent.params, _action_context(actor="Founder")
+                )
+                result_payload = action_result.model_dump(mode="json")
+            except Exception as exc:  # a bad action call must not lose the turn
+                logger.exception("assistant-triggered action %s failed", intent.action)
+                result_payload = {
+                    "outcome": "failed",
+                    "summary": f"Could not run {intent.action}",
+                    "detail": str(exc),
+                    "data": {},
+                }
+
     app.state.business.save_turn(ConversationTurn(who="founder", text=message))
-    app.state.business.save_turn(ConversationTurn(who="jarvis", text=reply.reply))
-    return reply.model_dump(mode="json")
+    app.state.business.save_turn(ConversationTurn(who="jarvis", text=intent.reply))
+    return {
+        "reply": intent.reply,
+        "suggested_actions": intent.suggested_actions,
+        "action": intent.action,
+        "result": result_payload,
+    }
 
 
 @app.get("/assistant/history")
@@ -810,3 +1014,139 @@ def assistant_greet(user: User = Depends(get_current_user)) -> dict:
     greeting = ea.greet(context)
     app.state.business.save_turn(ConversationTurn(who="jarvis", text=greeting.reply))
     return greeting.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Action engine -- what JARVIS can do, doing it, and the record of it
+# ---------------------------------------------------------------------------
+
+
+class ActionExecuteRequest(BaseModel):
+    params: dict = {}
+
+
+@app.get("/actions")
+def list_action_catalog(user: User = Depends(get_current_user)) -> list[dict]:
+    """Everything JARVIS can do, including actions whose connector is not
+    configured yet -- the founder should see the capability and what is
+    missing, so those are listed with "available": false rather than hidden.
+    `params_schema` travels with each entry so the UI can build the form."""
+    _load_action_catalog()
+    return [
+        {**spec.describe(), "available": _connector_available(spec.connector)}
+        for spec in all_actions()
+    ]
+
+
+@app.post("/actions/{name}/execute")
+def execute_action_endpoint(
+    name: str, request: ActionExecuteRequest, user: User = Depends(get_current_user)
+) -> dict:
+    """Run one action right now. `pre_approved=True`: the founder clicking
+    this button *is* the approval, so a sensitive action runs instead of
+    being parked as an Approval it would then have to approve twice."""
+    _load_action_catalog()
+    try:
+        result = execute_action(
+            name, request.params, _action_context(actor="Founder"), pre_approved=True
+        )
+    except UnknownAction:
+        raise HTTPException(status_code=404, detail=f"unknown action '{name}'") from None
+    return result.model_dump(mode="json")
+
+
+@app.get("/action-runs")
+def list_action_runs(limit: int = 50, user: User = Depends(get_current_user)) -> list[dict]:
+    """The activity feed: every action JARVIS actually ran, newest first.
+    Persisted by the executor, so it survives a restart -- this is the proof
+    of work, not a live event buffer."""
+    return [run.model_dump(mode="json") for run in app.state.business.list_action_runs(limit=limit)]
+
+
+@app.get("/connectors")
+def list_connectors(user: User = Depends(get_current_user)) -> list[dict]:
+    """Which outside systems JARVIS is wired into. Empty (not an error) when
+    no connector package is present -- the action catalog still works, it
+    just offers only the actions that need no connector."""
+    try:
+        from aio.connectors import all_connectors
+    except ImportError:
+        return []
+    return [jsonable_encoder(connector.status()) for connector in all_connectors()]
+
+
+# ---------------------------------------------------------------------------
+# Autonomy -- JARVIS working on its own
+# ---------------------------------------------------------------------------
+
+
+class AutonomySettingsRequest(BaseModel):
+    """All optional: the founder toggles one dial at a time, and an omitted
+    field must not reset the others."""
+
+    enabled: bool | None = None
+    interval_seconds: int | None = None
+    max_actions_per_cycle: int | None = None
+
+
+@app.get("/autonomy")
+def get_autonomy_settings(user: User = Depends(get_current_user)) -> dict:
+    get_settings = _require_kernel_method("get_settings")
+    return jsonable_encoder(get_settings())
+
+
+@app.post("/autonomy")
+def update_autonomy_settings(
+    request: AutonomySettingsRequest, user: User = Depends(get_current_user)
+) -> dict:
+    """Turn autonomy on/off and set its pace. Returns the settings as the
+    kernel now holds them, not as requested -- the kernel may clamp them."""
+    updates = request.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(
+            status_code=400,
+            detail="provide at least one of enabled, interval_seconds, max_actions_per_cycle",
+        )
+    if updates.get("interval_seconds") is not None and updates["interval_seconds"] < 1:
+        raise HTTPException(status_code=400, detail="interval_seconds must be at least 1")
+    if updates.get("max_actions_per_cycle") is not None and updates["max_actions_per_cycle"] < 1:
+        raise HTTPException(status_code=400, detail="max_actions_per_cycle must be at least 1")
+
+    update = _require_kernel_method("update_settings", "set_settings", "configure_settings")
+    params = _parameters(update)
+    takes_kwargs = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ) or all(key in params for key in updates)
+    updated = update(**updates) if takes_kwargs else update(updates)
+    if updated is None:
+        get_settings = _require_kernel_method("get_settings")
+        updated = get_settings()
+    return jsonable_encoder(updated)
+
+
+@app.post("/autonomy/run-once")
+async def run_autonomy_once(user: User = Depends(get_current_user)) -> dict:
+    """Run exactly one autonomy cycle now and return what it did. Synchronous
+    on purpose: the founder pressing this wants to watch JARVIS decide and
+    act in that request, not discover it later in the feed. Awaits an async
+    kernel cycle so either kernel shape works."""
+    _load_action_catalog()
+    run_once = _require_kernel_method("run_once", "run_cycle", "run_one_cycle")
+    # Signature-checked rather than retried on TypeError: retrying would run
+    # a second cycle when the first raised TypeError for its own reasons.
+    needs_context = any(
+        p.default is inspect.Parameter.empty
+        and p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for p in _parameters(run_once).values()
+    )
+    call = partial(run_once, _action_context()) if needs_context else run_once
+    if inspect.iscoroutinefunction(run_once):
+        outcome = await call()
+    else:
+        # A cycle is blocking (LLM calls plus DB writes); running it on the
+        # event loop would stall every other request -- including the SSE
+        # stream the founder is watching this work happen on.
+        outcome = await run_in_threadpool(call)
+    if inspect.isawaitable(outcome):
+        outcome = await outcome
+    return {"results": jsonable_encoder(outcome)}

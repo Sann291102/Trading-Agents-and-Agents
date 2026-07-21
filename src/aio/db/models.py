@@ -210,8 +210,29 @@ class ApprovalRecord(Base):
     detail: Mapped[str] = mapped_column(Text, default="")
     requested_by: Mapped[str] = mapped_column(String, default="Chief of Staff")
     status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    # When set, approving this row executes exactly this action with these
+    # parameters -- an approval is deferred work, not a notification.
+    pending_action: Mapped[str] = mapped_column(String, default="")
+    pending_params_json: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ActionRunRecord(Base):
+    """Audit trail of everything JARVIS has done. Backs the activity feed and
+    gives the autonomous loop memory of its own recent work, so it does not
+    repeat itself every cycle."""
+
+    __tablename__ = "action_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    action: Mapped[str] = mapped_column(String, index=True)
+    actor: Mapped[str] = mapped_column(String, default="JARVIS")
+    params_json: Mapped[str] = mapped_column(Text, default="")
+    outcome: Mapped[str] = mapped_column(String, default="executed", index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
 
 
 class MilestoneRecord(Base):

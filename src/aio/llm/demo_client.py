@@ -536,6 +536,35 @@ def _chief_of_staff(user: str) -> str:
     )
 
 
+def _executive_assistant_intent(user: str) -> str:
+    """Demo stand-in for the act() path. Returns a real delegation when the
+    founder's message sounds like an order, so demo mode exercises the whole
+    execute-an-action loop rather than only the conversational branch."""
+    said = user.rpartition("Founder says:")[2].strip() or user.strip()
+    lowered = said.lower()
+    orders = ("delegate", "have the", "ask the", "tell the", "get the", "scope", "draft")
+    if any(word in lowered for word in orders):
+        return json.dumps(
+            {
+                "reply": "On it — handing that to the Operations Director now.",
+                "action": "delegate_to_agent",
+                "params": {"agent_role": "Operations Director", "task": said[:200]},
+                "suggested_actions": [],
+            }
+        )
+    return json.dumps(
+        {
+            "reply": (
+                "Here is where things stand, based on the current business "
+                "snapshot. Want me to put someone on it?"
+            ),
+            "action": "",
+            "params": {},
+            "suggested_actions": ["Delegate the next milestone to its owner"],
+        }
+    )
+
+
 def _executive_assistant(user: str) -> str:
     if "Greet the founder" in user:
         return json.dumps(
@@ -619,6 +648,10 @@ def _business_agent_handler(system: str):
             if cls.role == "Chief of Staff" and "JSON schema" in system:
                 return _launch_plan if "the plan, not" in system else _chief_of_staff
             if cls.role == "Executive Assistant" and "JSON schema" in system:
+                # act() and converse()/greet() share a role but not a schema;
+                # the capability menu only appears in the former's prompt.
+                if "Capabilities you can run:" in system:
+                    return _executive_assistant_intent
                 return _executive_assistant
             return lambda user, role=cls.role: (
                 f"[{role} — demo output]\n"

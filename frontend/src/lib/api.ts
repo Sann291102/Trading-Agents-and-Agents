@@ -290,6 +290,10 @@ export interface ExecutiveBriefing {
 export interface AssistantReply {
   reply: string;
   suggested_actions: string[];
+  /** Action name JARVIS ran for this turn, or "" if it only answered. */
+  action?: string;
+  /** What that action's execution actually produced, when one ran. */
+  result?: { outcome: string; summary: string; detail: string; data: Record<string, unknown> } | null;
 }
 
 export interface ConversationTurn {
@@ -370,6 +374,115 @@ export function greetAssistant() {
 /** The persisted founder <-> JARVIS conversation tail, oldest first. */
 export function getAssistantHistory(limit = 30) {
   return fetchJSON<ConversationTurn[]>(`/assistant/history?limit=${limit}`);
+}
+
+// ---------------------------------------------------------------------------
+// Autonomy -- the action layer JARVIS actually performs work through
+// ---------------------------------------------------------------------------
+
+export type ActionOutcome = "executed" | "escalated" | "failed" | "rejected";
+
+/** One thing JARVIS did, as recorded by the executor. `summary` is past tense. */
+export interface ActionRun {
+  id: string;
+  action: string;
+  actor: string;
+  params_json: string;
+  outcome: ActionOutcome;
+  summary: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface ActionSpec {
+  name: string;
+  description: string;
+  /**
+   * `safe` runs autonomously (reversible + internal); `sensitive` is parked
+   * as an approval first because it is irreversible, outward-facing, or
+   * spends money.
+   */
+  risk: "safe" | "sensitive";
+  owner_agent: string;
+  connector: string | null;
+  params_schema: Record<string, unknown>;
+  available: boolean;
+}
+
+export interface ConnectorStatus {
+  name: string;
+  display_name: string;
+  description: string;
+  capabilities: string[];
+  available: boolean;
+  setup_hint: string;
+}
+
+export interface AutonomySettings {
+  enabled: boolean;
+  interval_seconds: number;
+  max_actions_per_cycle: number;
+}
+
+export interface ActionResult {
+  outcome: ActionOutcome;
+  summary: string;
+  detail: string;
+  data: Record<string, unknown>;
+}
+
+/** Newest first — the same ordering the backend's list_action_runs returns. */
+export function getActionRuns(limit = 50) {
+  return fetchJSON<ActionRun[]>(`/action-runs?limit=${limit}`);
+}
+
+/** Every registered action, including ones whose connector isn't configured. */
+export function getActions() {
+  return fetchJSON<ActionSpec[]>("/actions");
+}
+
+export function getConnectors() {
+  return fetchJSON<ConnectorStatus[]>("/connectors");
+}
+
+export function getAutonomy() {
+  return fetchJSON<AutonomySettings>("/autonomy");
+}
+
+/** Partial update — the backend merges onto the settings already in effect. */
+export function setAutonomy(settings: Partial<AutonomySettings>) {
+  return fetchJSON<AutonomySettings>("/autonomy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+/**
+ * Fires one autonomy cycle immediately instead of waiting for the interval.
+ * The response is a convenience echo of what the cycle did; the durable
+ * record is the action-run feed, so callers refetch that rather than trust
+ * this payload's exact shape.
+ */
+export interface AutonomyCycleRun {
+  results?: ActionResult[];
+  [key: string]: unknown;
+}
+
+export function runAutonomyOnce() {
+  return fetchJSON<AutonomyCycleRun>("/autonomy/run-once", { method: "POST" });
+}
+
+/**
+ * Runs a single action by name. A `sensitive` action returns outcome
+ * `escalated` rather than executing — it becomes a pending approval instead.
+ */
+export function executeAction(name: string, params: Record<string, unknown>) {
+  return fetchJSON<ActionResult>(`/actions/${encodeURIComponent(name)}/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ params }),
+  });
 }
 
 export interface AuthResponse {

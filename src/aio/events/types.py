@@ -24,5 +24,11 @@ EventType = Literal[
     "workflow_failed",
     "workflow_cancelled",
     "os_started",
+    "os_stopped",
     "living_market_state_updated",
+    # JARVIS acting on its own: the autonomous loop and the action engine.
+    "action_executed",
+    "action_escalated",
+    "action_failed",
+    "autonomy_cycle",
 ]

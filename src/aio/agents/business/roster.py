@@ -24,6 +24,7 @@ from __future__ import annotations
 from aio.agents.base import Agent
 from aio.agents.parsing import json_response_instruction
 from aio.models.business import (
+    AssistantIntent,
     AssistantReply,
     ConversationTurn,
     ExecutiveBriefing,
@@ -159,6 +160,53 @@ class ExecutiveAssistantAgent(BusinessAgent):
             parts.append(f"Conversation so far:\n{transcript}")
         parts.append(f"Founder says: {message}")
         return self.run_logged_json("\n\n".join(parts), AssistantReply, handoff_target="Founder")
+
+    def act(
+        self,
+        message: str,
+        context: str,
+        action_catalog: str,
+        history: list[ConversationTurn] | None = None,
+    ) -> AssistantIntent:
+        """Decide whether the founder asked a question or gave an order, and
+        in the latter case which capability to run.
+
+        This is what separates JARVIS from a chatbot: "have Ops scope the
+        MVP" should result in the Operations Director actually doing it, not
+        in advice about delegating. The chosen action still goes through the
+        executor, so anything sensitive is escalated for approval rather than
+        performed on the strength of a voice command alone.
+        """
+        self.system_prompt = (
+            "You are the Executive Assistant, JARVIS -- the founder's "
+            "autonomous operator, speaking with them directly (usually by "
+            "voice, so keep `reply` natural, spoken-style, under 90 words).\n\n"
+            "Decide what kind of turn this is. If the founder asked you to DO "
+            "something and a capability below covers it, set `action` to that "
+            "capability's exact name and fill `params` to match its schema; "
+            "your `reply` should then state what you are doing, in the present "
+            "or future tense, as someone who is handling it -- never explain "
+            "how they could do it themselves. If they only asked a question, "
+            "leave `action` empty and simply answer, grounded in the business "
+            "context.\n\n"
+            "Never invent an action name or a parameter that is not listed. "
+            "If the founder wants something no capability covers, leave "
+            "`action` empty and say plainly that you cannot do that part yet.\n\n"
+            "Companies marked PRE-REVENUE have not launched -- no customers, "
+            "revenue, or MRR exist. Never state a number that is not in the "
+            "context.\n\n"
+            f"Capabilities you can run:\n{action_catalog}\n\n"
+            f"{json_response_instruction(AssistantIntent)}"
+        )
+        parts = [f"Business context:\n{context}"]
+        if history:
+            transcript = "\n".join(
+                f"{'Founder' if turn.who == 'founder' else 'JARVIS'}: {turn.text}"
+                for turn in history[-12:]
+            )
+            parts.append(f"Conversation so far:\n{transcript}")
+        parts.append(f"Founder says: {message}")
+        return self.run_logged_json("\n\n".join(parts), AssistantIntent, handoff_target="Founder")
 
     def greet(self, context: str) -> AssistantReply:
         """The spoken greeting when the founder opens JARVIS: acknowledge
