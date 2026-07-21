@@ -37,3 +37,11 @@ def test_mistral_sends_only_reasoning_effort():
     reasoning_effort, and only 'none'/'high' are accepted (verified live)."""
     body = _client("mistralai/mistral-medium-3.5-128b")._extra_body(4096)
     assert body == {"reasoning_effort": "none"}
+
+
+def test_unknown_model_sends_no_vendor_params():
+    """The default must be a plain OpenAI request: inkling 400s on
+    reasoning_budget (verified live), and every family added since Nemotron
+    has rejected Nemotron's params."""
+    assert _client("thinkingmachines/inkling")._extra_body(4096) == {}
+    assert _client("some-vendor/future-model")._extra_body(4096) == {}

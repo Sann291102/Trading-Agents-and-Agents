@@ -26,23 +26,34 @@ class NvidiaClient:
         )
 
     def _extra_body(self, max_tokens: int) -> dict:
-        """Reasoning-control params differ per model family on NVIDIA's API.
-        Nemotron accepts `reasoning_budget`; GLM (z-ai/glm-*) rejects it with
-        a 400 and instead takes `clear_thinking` in its chat_template_kwargs;
-        Mistral rejects both and takes `reasoning_effort` (only 'none' or
-        'high' -- verified live, and 'high' queued past 120s on the free
-        tier, so 'none' keeps the voice assistant responsive). Sending the
-        wrong one is a hard request failure, so pick by model."""
+        """Reasoning-control params differ per model family on NVIDIA's API,
+        and sending the wrong one is a hard 400, so pick by model. Verified
+        live against each:
+
+        - Nemotron takes `reasoning_budget`.
+        - GLM (z-ai/glm-*) rejects `reasoning_budget` and instead wants
+          `clear_thinking` in its chat_template_kwargs.
+        - Mistral rejects both of those and takes `reasoning_effort`,
+          accepting only 'none' or 'high' ('high' queued past 120s on the
+          free tier, so 'none' keeps the voice assistant responsive).
+        - Everything else (e.g. thinkingmachines/inkling) gets nothing
+          vendor-specific. That is the default because every model family
+          added since Nemotron has rejected Nemotron's params, so the safe
+          assumption for an unknown model is the plain OpenAI request. Models
+          that reason anyway still do -- they just report it out-of-band in
+          `reasoning_content`, which `complete` already discards.
+        """
         model = self.model.lower()
         if "mistral" in model:
             return {"reasoning_effort": "none"}
-        if model.startswith("z-ai/glm") or "glm" in model:
+        if "glm" in model:
             return {"chat_template_kwargs": {"enable_thinking": True, "clear_thinking": False}}
-        # Nemotron and other reasoning models that honor an explicit budget.
-        return {
-            "chat_template_kwargs": {"enable_thinking": True},
-            "reasoning_budget": max_tokens,
-        }
+        if "nemotron" in model:
+            return {
+                "chat_template_kwargs": {"enable_thinking": True},
+                "reasoning_budget": max_tokens,
+            }
+        return {}
 
     def complete(self, system: str, user: str, max_tokens: int = 20000) -> str:
         stream = self._client.chat.completions.create(
