@@ -253,6 +253,31 @@ class MilestoneRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SignalRecord(Base):
+    """Something JARVIS observed without being asked.
+
+    `dedupe_key` is indexed and carries the identity of the underlying
+    condition rather than the moment it was seen, so a standing problem
+    updates one row (times_seen/last_seen_at) instead of appending a new one
+    every observation cycle."""
+
+    __tablename__ = "signals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    source: Mapped[str] = mapped_column(String, index=True)
+    kind: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    severity: Mapped[str] = mapped_column(String, default="info", index=True)
+    company_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    dedupe_key: Mapped[str] = mapped_column(String, index=True)
+    times_seen: Mapped[int] = mapped_column(Integer, default=1)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ConversationTurnRecord(Base):
     """One founder <-> JARVIS exchange from the voice-first assistant.
     Persisted so JARVIS remembers the conversation across sessions and

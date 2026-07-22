@@ -365,9 +365,15 @@ def test_assistant_executes_an_order_not_just_acknowledges_it(monkeypatch, tmp_p
     produce a real, recorded side effect, not only a conversational reply."""
     import aio.api.main as main_module
     from aio.business import BusinessService
-    from aio.llm import DemoAnthropicClient
 
-    monkeypatch.setattr(main_module, "build_default_llm", lambda: DemoAnthropicClient())
+    # Switch the provider itself rather than patching main_module's name.
+    # This endpoint delegates into an action handler that did its own
+    # `from aio.llm import build_default_llm` at import time, so patching the
+    # API module's copy leaves the handler bound to the real factory -- which
+    # silently made this test fire live network calls at whatever provider
+    # .env pointed at. `_build_raw_llm` re-reads settings on every call, so
+    # flipping the provider reaches every call site there is.
+    monkeypatch.setattr(settings, "llm_provider", "demo")
 
     business = BusinessService(database_url=f"sqlite:///{tmp_path}/biz.db")
     business.init_schema()

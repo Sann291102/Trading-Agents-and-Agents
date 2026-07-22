@@ -27,6 +27,10 @@ class AutonomySettings(BaseModel):
     enabled: bool = False
     interval_seconds: int = Field(default=900, ge=30, le=86_400)
     max_actions_per_cycle: int = Field(default=2, ge=0, le=10)
+    # Watching is a DB read plus a few HTTP calls; reasoning is a model call.
+    # They are throttled separately so JARVIS can keep its eyes open at a pace
+    # that would be unaffordable for the planner.
+    observe_interval_seconds: int = Field(default=300, ge=30, le=86_400)
 
 
 class NextAction(BaseModel):

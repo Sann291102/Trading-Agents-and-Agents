@@ -23,7 +23,9 @@ from aio.db.models import (
     CompanyRecord,
     ConversationTurnRecord,
     MilestoneRecord,
+    SignalRecord,
 )
+from aio.models.signals import Signal
 from aio.models.business import (
     ActionRun,
     Approval,
@@ -169,6 +171,104 @@ class BusinessService:
             session.commit()
             session.refresh(record)
             return _to_approval(record)
+
+    # -- signals (what JARVIS noticed on its own) -------------------------
+
+    def record_signal(self, signal: Signal) -> Signal:
+        """Persist an observation, collapsing repeats of a standing condition.
+
+        An observer re-reports the same fact every cycle by design (the site
+        is *still* down), so an unresolved signal with the same dedupe_key is
+        updated rather than duplicated. The returned signal's `times_seen`
+        tells the caller whether this was new (1) or a repeat.
+        """
+        with self._Session() as session:
+            existing = session.scalar(
+                select(SignalRecord)
+                .where(SignalRecord.dedupe_key == signal.dedupe_key)
+                .where(SignalRecord.resolved_at.is_(None))
+                .order_by(SignalRecord.observed_at.desc())
+            )
+            if existing is not None:
+                existing.times_seen += 1
+                existing.last_seen_at = datetime.now(timezone.utc)
+                # Refresh the wording -- a condition can worsen between
+                # observations (3 tickets open becomes 30).
+                existing.title = signal.title
+                existing.detail = signal.detail
+                existing.severity = signal.severity
+                session.commit()
+                session.refresh(existing)
+                return _to_signal(existing)
+
+            record = SignalRecord(**signal.model_dump())
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return _to_signal(record)
+
+    def list_signals(
+        self, *, limit: int = 50, open_only: bool = False, unprocessed_only: bool = False
+    ) -> list[Signal]:
+        """Newest first."""
+        with self._Session() as session:
+            stmt = select(SignalRecord)
+            if open_only:
+                stmt = stmt.where(SignalRecord.resolved_at.is_(None))
+            if unprocessed_only:
+                stmt = stmt.where(SignalRecord.processed_at.is_(None))
+            stmt = stmt.order_by(SignalRecord.last_seen_at.desc(), SignalRecord.id).limit(limit)
+            return [_to_signal(r) for r in session.scalars(stmt)]
+
+    def mark_signals_processed(self, signal_ids: list[str]) -> int:
+        """Take signals out of the executive loop's inbox once it has taken
+        them into account, so the next cycle reasons about what is new."""
+        if not signal_ids:
+            return 0
+        with self._Session() as session:
+            now = datetime.now(timezone.utc)
+            count = 0
+            for signal_id in signal_ids:
+                record = session.get(SignalRecord, signal_id)
+                if record is not None and record.processed_at is None:
+                    record.processed_at = now
+                    count += 1
+            session.commit()
+            return count
+
+    def resolve_signals_absent_from(self, source: str, seen_keys: set[str]) -> int:
+        """Close conditions this observer no longer reports.
+
+        Without this a signal would be true forever: the site comes back up,
+        but "website offline" stays open and keeps driving the loop. An
+        observer's output is the complete current truth for its own source,
+        so anything it stops mentioning has ended.
+        """
+        with self._Session() as session:
+            stmt = (
+                select(SignalRecord)
+                .where(SignalRecord.source == source)
+                .where(SignalRecord.resolved_at.is_(None))
+            )
+            now = datetime.now(timezone.utc)
+            count = 0
+            for record in session.scalars(stmt):
+                if record.dedupe_key not in seen_keys:
+                    record.resolved_at = now
+                    count += 1
+            session.commit()
+            return count
+
+    def signal_inbox(self, limit: int = 15) -> str:
+        """Open, unprocessed observations as planner context -- the Observe
+        stage of the autonomous loop. Urgent first, then most-repeated, since
+        a condition seen many times has been ignored many times."""
+        signals = self.list_signals(limit=100, open_only=True, unprocessed_only=True)
+        if not signals:
+            return "Nothing new observed."
+        rank = {"urgent": 0, "notable": 1, "info": 2}
+        signals.sort(key=lambda s: (rank.get(s.severity, 3), -s.times_seen))
+        return "\n".join(f"  {s.as_prompt_line()}" for s in signals[:limit])
 
     # -- action audit trail -----------------------------------------------
 
@@ -418,6 +518,24 @@ def _to_approval(record: ApprovalRecord) -> Approval:
         pending_params_json=record.pending_params_json,
         created_at=_utc(record.created_at),
         decided_at=_utc(record.decided_at) if record.decided_at else None,
+    )
+
+
+def _to_signal(record: SignalRecord) -> Signal:
+    return Signal(
+        id=record.id,
+        source=record.source,
+        kind=record.kind,
+        title=record.title,
+        detail=record.detail,
+        severity=record.severity,
+        company_id=record.company_id,
+        dedupe_key=record.dedupe_key,
+        times_seen=record.times_seen,
+        observed_at=_utc(record.observed_at),
+        last_seen_at=_utc(record.last_seen_at),
+        processed_at=_utc(record.processed_at) if record.processed_at else None,
+        resolved_at=_utc(record.resolved_at) if record.resolved_at else None,
     )
 
 

@@ -17,6 +17,7 @@ from aio.models.business import (
     Milestone,
     next_stage,
 )
+from aio.models.signals import Signal
 
 
 @pytest.fixture()
@@ -167,6 +168,98 @@ def test_decide_approval_rejects_bad_decision(service: BusinessService):
 
 def test_decide_unknown_approval_returns_none(service: BusinessService):
     assert service.decide_approval("nope", "approved") is None
+
+
+def _signal(**overrides) -> Signal:
+    base = {
+        "source": "business_state",
+        "kind": "milestone_blocked",
+        "title": "Broker API is blocking launch",
+        "dedupe_key": "milestone_blocked:abc",
+        "severity": "notable",
+    }
+    return Signal(**{**base, **overrides})
+
+
+def test_repeated_observation_collapses_onto_one_signal(service: BusinessService):
+    """The core invariant of the observer system. Observers are stateless and
+    re-report standing conditions every cycle, so without dedupe the feed
+    would fill with copies of the same fact and drown the real news."""
+    first = service.record_signal(_signal())
+    second = service.record_signal(_signal())
+    third = service.record_signal(_signal())
+
+    assert first.id == second.id == third.id
+    assert third.times_seen == 3
+    assert len(service.list_signals(open_only=True)) == 1
+
+
+def test_repeat_observation_refreshes_the_wording(service: BusinessService):
+    """A standing condition can worsen between observations -- the row must
+    carry the current truth, not the first thing ever seen."""
+    service.record_signal(_signal(title="3 tickets open", severity="info"))
+    latest = service.record_signal(_signal(title="30 tickets open", severity="urgent"))
+    assert latest.title == "30 tickets open"
+    assert latest.severity == "urgent"
+    assert latest.times_seen == 2
+
+
+def test_distinct_conditions_stay_distinct(service: BusinessService):
+    service.record_signal(_signal())
+    service.record_signal(_signal(kind="website_offline", dedupe_key="website_offline:tradew"))
+    assert len(service.list_signals(open_only=True)) == 2
+
+
+def test_conditions_an_observer_stops_reporting_are_resolved(service: BusinessService):
+    """Otherwise a fixed problem stays true forever: the site comes back up
+    but 'website offline' keeps driving the executive loop."""
+    service.record_signal(_signal())
+    service.record_signal(_signal(kind="website_offline", dedupe_key="website_offline:tradew"))
+
+    resolved = service.resolve_signals_absent_from("business_state", {"website_offline:tradew"})
+    assert resolved == 1
+
+    still_open = {s.dedupe_key for s in service.list_signals(open_only=True)}
+    assert still_open == {"website_offline:tradew"}
+
+
+def test_resolving_ignores_other_sources(service: BusinessService):
+    """One observer's report is the truth only for its own source -- it must
+    never close another observer's signals."""
+    service.record_signal(_signal(source="website", dedupe_key="website_offline:tradew"))
+    resolved = service.resolve_signals_absent_from("business_state", set())
+    assert resolved == 0
+    assert len(service.list_signals(open_only=True)) == 1
+
+
+def test_signal_inbox_puts_urgent_and_repeated_first(service: BusinessService):
+    """A condition seen many times has been ignored many times, so repetition
+    is a priority signal in its own right."""
+    service.record_signal(_signal(dedupe_key="a", title="Low priority", severity="info"))
+    for _ in range(4):
+        service.record_signal(_signal(dedupe_key="b", title="Seen often", severity="info"))
+    service.record_signal(_signal(dedupe_key="c", title="On fire", severity="urgent"))
+
+    inbox = service.signal_inbox()
+    assert inbox.index("On fire") < inbox.index("Seen often") < inbox.index("Low priority")
+    assert "seen 4x" in inbox
+
+
+def test_processing_empties_the_inbox_without_resolving(service: BusinessService):
+    """Processed means 'the loop took it into account', not 'it stopped being
+    true' -- the condition stays open until an observer says otherwise."""
+    service.record_signal(_signal())
+    open_ids = [s.id for s in service.list_signals(open_only=True, unprocessed_only=True)]
+    assert service.mark_signals_processed(open_ids) == 1
+    assert service.signal_inbox() == "Nothing new observed."
+    assert len(service.list_signals(open_only=True)) == 1
+
+
+def test_marking_processed_is_idempotent(service: BusinessService):
+    stored = service.record_signal(_signal())
+    assert service.mark_signals_processed([stored.id]) == 1
+    assert service.mark_signals_processed([stored.id]) == 0
+    assert service.mark_signals_processed([]) == 0
 
 
 def test_conversation_turns_round_trip_oldest_first(service: BusinessService):

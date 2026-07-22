@@ -22,12 +22,12 @@ import uuid
 from contextlib import asynccontextmanager
 from functools import partial
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from aio.actions.base import ActionContext
 from aio.actions.executor import UnknownAction, execute_action, execute_approved_action
@@ -44,6 +44,7 @@ from aio.models.business import (
     Milestone,
     next_stage,
 )
+from aio.models.signals import ObserverStatus, Signal
 from aio.config import settings
 from aio.db.models import User
 from aio.events.bus import event_bus
@@ -97,6 +98,36 @@ def _load_action_catalog() -> None:
             importlib.import_module(f"aio.actions.catalog.{module.name}")
         except Exception:
             logger.exception("action catalog module %s failed to import", module.name)
+
+
+_observers_loaded = False
+
+
+def _load_observers() -> list:
+    """Observers register by import side effect exactly like actions, so the
+    package has to be imported before anything asks what JARVIS is watching.
+    Returns the live roster instead of None because every caller wants it, and
+    an absent observers package degrades to an empty roster -- the founder
+    sees "watching nothing" rather than a 500. Walks the package once; a
+    module that fails to import is skipped, never fatal."""
+    global _observers_loaded
+    try:
+        from aio.observers.base import all_observers
+    except ImportError:
+        logger.warning("no observers package importable -- /observers will be empty")
+        return []
+    if not _observers_loaded:
+        _observers_loaded = True
+        try:
+            package = importlib.import_module("aio.observers")
+        except ImportError:
+            return []
+        for module in pkgutil.iter_modules(list(getattr(package, "__path__", []))):
+            try:
+                importlib.import_module(f"aio.observers.{module.name}")
+            except Exception:
+                logger.exception("observer module %s failed to import", module.name)
+    return all_observers()
 
 
 def _business_service() -> BusinessService:
@@ -158,11 +189,34 @@ def _require_kernel_method(*names: str):
     return method
 
 
+def _business_method(business: BusinessService, *names: str):
+    """Same versioning trick as `_kernel_method`, for BusinessService: use the
+    first method it really exposes so this module never calls a capability it
+    merely wishes existed."""
+    for name in names:
+        method = getattr(business, name, None)
+        if callable(method):
+            return method
+    return None
+
+
 def _parameters(method) -> dict:
     try:
         return dict(inspect.signature(method).parameters)
     except (TypeError, ValueError):  # builtins / C-implemented callables
         return {}
+
+
+def _bounds_detail(exc: ValidationError) -> str:
+    """Turn a settings-model rejection into one line the founder can act on.
+
+    Reads the bound off pydantic rather than restating it, so the message can
+    never disagree with the model that actually enforces it."""
+    parts = []
+    for error in exc.errors():
+        field = ".".join(str(part) for part in error.get("loc", ())) or "settings"
+        parts.append(f"{field}: {error.get('msg', 'invalid value')}")
+    return "; ".join(parts) or "invalid settings"
 
 
 def _configure_kernel() -> None:
@@ -234,9 +288,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Organization (vertical slice)", lifespan=lifespan)
 
+# The dev frontend takes whatever port is free when 3000 is occupied, so
+# pinning exact localhost origins in .env means CORS breaks every time that
+# port changes -- which presents as a dashboard full of "Failed to fetch"
+# with no obvious cause. Any localhost origin is same-machine by definition,
+# so allow the whole range instead of chasing ports. Non-local origins still
+# come only from CORS_ORIGINS_RAW.
+_LOCALHOST_ORIGIN_RE = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=_LOCALHOST_ORIGIN_RE,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1087,6 +1150,7 @@ class AutonomySettingsRequest(BaseModel):
     enabled: bool | None = None
     interval_seconds: int | None = None
     max_actions_per_cycle: int | None = None
+    observe_interval_seconds: int | None = None
 
 
 @app.get("/autonomy")
@@ -1105,19 +1169,24 @@ def update_autonomy_settings(
     if not updates:
         raise HTTPException(
             status_code=400,
-            detail="provide at least one of enabled, interval_seconds, max_actions_per_cycle",
+            detail=(
+                "provide at least one of enabled, interval_seconds, "
+                "max_actions_per_cycle, observe_interval_seconds"
+            ),
         )
-    if updates.get("interval_seconds") is not None and updates["interval_seconds"] < 1:
-        raise HTTPException(status_code=400, detail="interval_seconds must be at least 1")
-    if updates.get("max_actions_per_cycle") is not None and updates["max_actions_per_cycle"] < 1:
-        raise HTTPException(status_code=400, detail="max_actions_per_cycle must be at least 1")
-
     update = _require_kernel_method("update_settings", "set_settings", "configure_settings")
     params = _parameters(update)
     takes_kwargs = any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
     ) or all(key in params for key in updates)
-    updated = update(**updates) if takes_kwargs else update(updates)
+    try:
+        updated = update(**updates) if takes_kwargs else update(updates)
+    except ValidationError as exc:
+        # The real bounds live on AutonomySettings (a 5-second interval is a
+        # typo, not a setting) and the kernel re-validates the whole model on
+        # every update. Restating them here would drift; letting the
+        # ValidationError escape turns a typo into a 500.
+        raise HTTPException(status_code=400, detail=_bounds_detail(exc)) from exc
     if updated is None:
         get_settings = _require_kernel_method("get_settings")
         updated = get_settings()
@@ -1150,3 +1219,142 @@ async def run_autonomy_once(user: User = Depends(get_current_user)) -> dict:
     if inspect.isawaitable(outcome):
         outcome = await outcome
     return {"results": jsonable_encoder(outcome)}
+
+
+# ---------------------------------------------------------------------------
+# Observation -- what JARVIS noticed without being asked
+# ---------------------------------------------------------------------------
+
+
+@app.get("/signals")
+def list_signals(
+    limit: int = 50,
+    open_only: bool = False,
+    unprocessed_only: bool = False,
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    """The feed of what JARVIS noticed on its own, newest first. A standing
+    condition appears once with a rising `times_seen`, not once per sweep --
+    see models/signals.py -- so this list stays readable however often the
+    observation cycle runs."""
+    signals = _business_service().list_signals(
+        limit=limit, open_only=open_only, unprocessed_only=unprocessed_only
+    )
+    return [signal.model_dump(mode="json") for signal in signals]
+
+
+@app.get("/observers")
+def list_observers(user: User = Depends(get_current_user)) -> list[dict]:
+    """Every pair of eyes JARVIS has, including the ones that are not open:
+    an unconfigured observer is listed with "available": false and its
+    setup_hint, so the founder can see what JARVIS *could* be watching and
+    what it would take. Same reasoning as /actions listing unavailable
+    actions rather than hiding them."""
+    roster: list[dict] = []
+    for observer in _load_observers():
+        try:
+            roster.append(observer.status().model_dump(mode="json"))
+        except Exception:
+            # A status() that raises is a bug in that observer's config check.
+            # Dropping it would hide a capability the founder owns, so it is
+            # reported as unavailable instead.
+            name = getattr(observer, "name", observer.__class__.__name__)
+            logger.exception("observer %s could not report its status", name)
+            roster.append(
+                ObserverStatus(
+                    name=name,
+                    display_name=getattr(observer, "display_name", name),
+                    description=getattr(observer, "description", ""),
+                    available=False,
+                    setup_hint="This observer's availability check failed -- see server logs.",
+                    watches=list(getattr(observer, "watches", ()) or ()),
+                ).model_dump(mode="json")
+            )
+    return roster
+
+
+@app.post("/observe/run-once")
+async def run_observation_once(user: User = Depends(get_current_user)) -> list[dict]:
+    """Sweep every available observer right now and return only what is new.
+    Cheap by construction -- a sweep is DB reads plus connector calls, no LLM
+    -- which is why the founder can press this freely, unlike
+    /autonomy/run-once. Prefers the kernel's own observe entry point when it
+    has one so a scheduled sweep and a manual one stay identical."""
+    _load_observers()
+    observe = _kernel_method("observe_once", "run_observation_once", "observe")
+    if observe is None:
+        try:
+            from aio.observers.cycle import run_observation_cycle
+        except ImportError:
+            # Nothing installed to watch with: an empty sweep, not an error.
+            return []
+        call = partial(run_observation_cycle, _business_service())
+    else:
+        needs_business = any(
+            p.default is inspect.Parameter.empty
+            and p.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            for p in _parameters(observe).values()
+        )
+        call = partial(observe, _business_service()) if needs_business else observe
+
+    if inspect.iscoroutinefunction(call):  # unwraps functools.partial since 3.8
+        signals = await call()
+    else:
+        # Blocking HTTP + SQLite: on the event loop this would stall the SSE
+        # stream the founder is watching the new signals arrive on.
+        signals = await run_in_threadpool(call)
+    if inspect.isawaitable(signals):
+        signals = await signals
+    if signals is None:
+        signals = []
+    if not isinstance(signals, list):
+        signals = [signals]
+    return jsonable_encoder(signals)
+
+
+@app.post("/signals/{signal_id}/resolve")
+def resolve_signal(signal_id: str, user: User = Depends(get_current_user)) -> dict:
+    """The founder dismissing a signal by hand: "seen it, handled".
+
+    Signals normally close themselves -- an observer that stops reporting a
+    condition resolves it -- so this is the manual override for the ones that
+    will not, e.g. a fact JARVIS was right to raise once and should stop
+    raising. It always takes the signal out of the executive loop's inbox
+    (`processed`); it additionally marks it resolved only if BusinessService
+    actually exposes a resolve-one method, and says so in the response rather
+    than claiming a closure that did not happen.
+    """
+    business = _business_service()
+    # No get_signal(id) on BusinessService, and mark_signals_processed returns
+    # 0 both for an unknown id and for an already-processed one -- so the list
+    # is scanned to tell those apart and answer 404 honestly.
+    signal = next(
+        (s for s in business.list_signals(limit=1000) if s.id == signal_id), None
+    )
+    if signal is None:
+        raise HTTPException(status_code=404, detail="unknown signal")
+
+    resolved = signal.resolved_at is not None
+    resolve = _business_method(business, "resolve_signal", "resolve_signal_by_id", "close_signal")
+    if resolve is not None and not resolved:
+        try:
+            resolve(signal_id)
+            resolved = True
+        except Exception:
+            logger.exception("could not resolve signal %s", signal_id)
+
+    processed = bool(business.mark_signals_processed([signal_id])) or signal.processed_at is not None
+    return {
+        "status": "resolved" if resolved else "processed",
+        "signal_id": signal_id,
+        "resolved": resolved,
+        "processed": processed,
+        "detail": ""
+        if resolved
+        else (
+            "Marked processed, so it leaves JARVIS's inbox. It stays open until "
+            "its observer stops reporting the condition -- BusinessService has no "
+            "resolve-one-signal method to call."
+        ),
+    }

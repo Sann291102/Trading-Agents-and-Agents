@@ -485,6 +485,98 @@ export function executeAction(name: string, params: Record<string, unknown>) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Observation -- what JARVIS noticed without being asked
+// ---------------------------------------------------------------------------
+
+export type SignalSeverity = "info" | "notable" | "urgent";
+
+/**
+ * One thing an observer saw. `dedupe_key` identifies the underlying
+ * *condition*, not the moment it was spotted, which is why the same milestone
+ * still being blocked tomorrow arrives as `times_seen: 2` on the original
+ * signal rather than as a second row. A signal is open until an observer stops
+ * reporting it (auto-resolved) or the founder dismisses it.
+ */
+export interface Signal {
+  id: string;
+  /** Observer name that raised it, e.g. "milestones". */
+  source: string;
+  /** Machine name for the condition, e.g. "milestone_blocked". */
+  kind: string;
+  title: string;
+  detail: string;
+  severity: SignalSeverity;
+  company_id: string | null;
+  dedupe_key: string;
+  times_seen: number;
+  observed_at: string;
+  last_seen_at: string;
+  processed_at: string | null;
+  resolved_at: string | null;
+}
+
+export interface ObserverStatus {
+  name: string;
+  display_name: string;
+  description: string;
+  available: boolean;
+  setup_hint: string;
+  /** Human-readable list of the conditions this observer watches for. */
+  watches: string[];
+}
+
+/** Newest first. Defaults mirror the backend's (all signals, most recent 50). */
+export function getSignals(opts: { limit?: number; openOnly?: boolean; unprocessedOnly?: boolean } = {}) {
+  const params = new URLSearchParams({
+    limit: String(opts.limit ?? 50),
+    open_only: String(opts.openOnly ?? false),
+    unprocessed_only: String(opts.unprocessedOnly ?? false),
+  });
+  return fetchJSON<Signal[]>(`/signals?${params.toString()}`);
+}
+
+/** Every observer, including ones whose connector/config isn't set up yet. */
+export function getObservers() {
+  return fetchJSON<ObserverStatus[]>("/observers");
+}
+
+/**
+ * Sweeps every available observer immediately instead of waiting for the
+ * background cycle. Returns only the *new* signals: repeats of conditions
+ * already on file are collapsed into their existing signal server-side, so an
+ * empty array genuinely means "nothing new", not "nothing happening".
+ */
+export function runObservationOnce() {
+  return fetchJSON<Signal[]>("/observe/run-once", { method: "POST" });
+}
+
+export interface SignalResolveResponse {
+  status: "resolved" | "processed";
+  signal_id: string;
+  /** True only if the signal is actually closed. Usually false — see below. */
+  resolved: boolean;
+  /** True once it is out of JARVIS's inbox, which is what always happens. */
+  processed: boolean;
+  /** Populated when `resolved` is false, explaining why it stays open. */
+  detail: string;
+}
+
+/**
+ * The founder saying "I've seen this" — which is *acknowledgement*, not
+ * closure, and callers must not present it as closure. The backend marks the
+ * signal processed (it leaves JARVIS's inbox and stops driving the autonomy
+ * loop) but leaves it open, because a condition is only over when the observer
+ * that reported it stops reporting it. So a still-blocked milestone stays in
+ * the feed after this call, correctly, with `processed_at` set — check
+ * `resolved` before telling the founder anything went away.
+ */
+export function resolveSignal(signalId: string) {
+  return fetchJSON<SignalResolveResponse>(`/signals/${encodeURIComponent(signalId)}/resolve`, {
+    method: "POST",
+  });
+}
+
 export interface AuthResponse {
   token: string;
 }

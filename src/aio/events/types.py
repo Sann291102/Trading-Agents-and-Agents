@@ -31,4 +31,10 @@ EventType = Literal[
     "action_escalated",
     "action_failed",
     "autonomy_cycle",
+    # JARVIS noticing on its own. These carry the outside world onto the same
+    # bus the internal events already use, so the live feed shows what JARVIS
+    # saw and what it did about it in one stream rather than two.
+    "signal_observed",
+    "signal_resolved",
+    "observation_cycle",
 ]

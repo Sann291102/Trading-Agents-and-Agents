@@ -7,7 +7,10 @@ part worth unit-testing and the part a "run a cycle now" endpoint can call
 directly.
 
 The stages map onto real objects rather than prose:
-  Observe    -- `business.snapshot_for_briefing()` (the company's real state)
+  Observe    -- `run_observation_cycle()` sweeps JARVIS's watchers, and
+                `business.signal_inbox()` puts what they saw in front of the
+                planner; `business.snapshot_for_briefing()` is only the
+                background those observations happened against
   Reason     -- one LLM call producing an `AutonomyDecision`
   Prioritize -- the decision is capped at `limit` actions, highest leverage first
   Execute    -- `execute_action`, never `pre_approved`, so sensitive work parks
@@ -36,6 +39,7 @@ from aio.models.autonomy import AutonomyDecision
 
 if TYPE_CHECKING:
     from aio.business.service import BusinessService
+    from aio.models.signals import Signal
 
 logger = logging.getLogger("aio.os.autonomy")
 
@@ -55,8 +59,17 @@ def _system_prompt(limit: int) -> str:
         "You do not give advice, write reports, or describe what someone should "
         "do. You choose the highest-leverage work that moves the business "
         "forward right now, and you perform it by choosing actions.\n\n"
+        "You are reactive. Every cycle begins with what has been OBSERVED -- "
+        "things JARVIS's watchers saw that nobody typed in. Those observations "
+        "are your reason to act; the state of the business is only the "
+        "background they happened against.\n\n"
         "Rules:\n"
         f"- Choose at most {limit} action(s) this cycle, best first.\n"
+        "- React to the observations. Ones marked [urgent], and ones seen many "
+        "times, are the ones that have been ignored longest -- handle those "
+        "first.\n"
+        "- An observation that needs no action is fine to leave alone. You have "
+        "read it; not every observed fact deserves a response.\n"
         "- Every `action` value MUST be copied verbatim from the catalog below. "
         "An action that is not in the catalog does not exist and will be discarded.\n"
         "- Every `params` object MUST use that action's exact parameter names.\n"
@@ -76,17 +89,32 @@ def plan_next_actions(
     llm: Any,
     *,
     limit: int,
+    inbox: str | None = None,
 ) -> AutonomyDecision:
     """Decide what JARVIS should do next, grounded in what is actually true.
 
-    Three inputs, each load-bearing: the company's real state (so the plan is
-    about this business), what JARVIS already did (so it does not loop on the
-    same idea forever), and the action catalog (so the plan is executable
-    rather than a wish).
+    Four inputs, each load-bearing: what was observed (so the plan is a
+    *response* to something rather than a timer firing), the company's real
+    state (so it is about this business), what JARVIS already did (so it does
+    not loop on the same idea forever), and the action catalog (so the plan is
+    executable rather than a wish).
+
+    The signal inbox goes first because that is the ranking the operator
+    should read the cycle in: the world changed, here is the background,
+    here is what you may do about it.
+
+    `inbox` may be supplied by a caller that already rendered it, so that the
+    text shown to the model and the signals that caller marks processed are
+    provably the same set rather than two independent reads.
     """
     system = _system_prompt(limit)
+    if inbox is None:
+        inbox = business.signal_inbox()
     user = (
-        "Current state of the business:\n"
+        "OBSERVED -- what JARVIS has noticed and you have not yet responded to. "
+        "This is why this cycle is running:\n"
+        f"{inbox}\n\n"
+        "Background -- current state of the business:\n"
         f"{business.snapshot_for_briefing()}\n\n"
         "What you have already done recently -- do not repeat any of it:\n"
         f"{business.recent_action_summary()}\n\n"
@@ -104,14 +132,46 @@ def plan_next_actions(
     return decision
 
 
+def _observe(business: "BusinessService") -> list["Signal"]:
+    """Look before thinking, and never let looking cost the cycle.
+
+    Imported lazily so this module stays importable without the observers
+    package: `aio.os.autonomy` is on the API's import path, and a missing or
+    broken pair of eyes must degrade to "plan on the last known state", not
+    to an import error at startup.
+    """
+    try:
+        from aio.observers.cycle import run_observation_cycle
+    except ImportError:
+        logger.debug("observers package unavailable -- skipping the observe step")
+        return []
+    except Exception:
+        # A built-in observer that explodes at import time would otherwise
+        # take the cycle with it, since this call sits outside the planning
+        # guard below.
+        logger.exception("observers package could not be imported")
+        return []
+    try:
+        return list(run_observation_cycle(business))
+    except Exception:
+        logger.exception("observation failed -- reasoning on already-known signals")
+        return []
+
+
 def run_cycle(
     business: "BusinessService",
     *,
     context_factory: Callable[[], ActionContext],
     llm: Any = None,
     limit: int = 2,
+    observe: bool = True,
 ) -> list[ActionResult]:
     """Run one full autonomous cycle and return what came of it.
+
+    `observe=True` makes a single call genuinely Observe -> Reason -> Act. The
+    kernel can also watch on its own faster clock, in which case the sweep
+    here is what guarantees the planner reasons about the world as of *now*
+    rather than as of the last cheap pass.
 
     `context_factory` is injected rather than built here so the caller
     controls which BusinessService/memory an action can reach -- the kernel
@@ -122,15 +182,33 @@ def run_cycle(
 
         llm = build_default_llm()
 
+    observed = _observe(business) if observe else []
+
+    # Captured before planning, because these exact ids are what the planner
+    # is about to be shown. Marking them afterwards is what stops the loop
+    # reacting to the same standing condition every cycle forever.
+    considered: list[str] = []
+
     try:
-        decision = plan_next_actions(business, llm, limit=limit)
+        inbox = business.signal_inbox()
+        considered = _signals_in(business, inbox)
+        decision = plan_next_actions(business, llm, limit=limit, inbox=inbox)
     except Exception as exc:
         # A malformed or failed plan costs this cycle only. The next one
-        # starts from the same state and can succeed.
+        # starts from the same state and can succeed. The signals stay
+        # unprocessed on purpose: nothing ever reasoned about them.
         logger.exception("autonomy planning failed")
         _publish_cycle(
             f"Autonomy cycle skipped -- planning failed: {exc}",
-            {"executed": 0, "escalated": 0, "failed": 0, "error": str(exc)},
+            {
+                "executed": 0,
+                "escalated": 0,
+                "failed": 0,
+                "error": str(exc),
+                "new_signals": len(observed),
+                "signals_considered": 0,
+                "signals_processed": 0,
+            },
         )
         return []
 
@@ -160,8 +238,52 @@ def run_cycle(
                 )
             )
 
-    _publish_cycle(_cycle_message(results, skipped), _cycle_payload(decision, results, skipped))
+    # Even a cycle that chose no actions has considered these signals, and
+    # deciding nothing was needed is a real decision -- leaving them
+    # unprocessed would make the next cycle re-litigate the same facts.
+    processed = _mark_processed(business, considered)
+
+    payload = _cycle_payload(decision, results, skipped)
+    payload["new_signals"] = len(observed)
+    payload["signals_considered"] = len(considered)
+    payload["signals_processed"] = processed
+    _publish_cycle(_cycle_message(results, skipped), payload)
     return results
+
+
+def _signals_in(business: "BusinessService", inbox: str) -> list[str]:
+    """Ids of exactly the signals the planner is being shown, and no others.
+
+    `signal_inbox()` ranks and truncates, so with more open observations than
+    it prints, "everything open and unprocessed" is a strictly larger set than
+    "what the model read". Marking the difference processed would retire
+    conditions nobody ever reasoned about -- permanently, because a repeat
+    observation bumps `times_seen` on the existing row and never clears
+    `processed_at`. Matching the rendered lines keeps this correct whatever
+    ranking or cap the inbox chooses.
+    """
+    shown = {line.strip() for line in inbox.splitlines() if line.strip()}
+    if not shown:
+        return []
+    # Same candidate pool signal_inbox() ranks over, so nothing it could have
+    # printed is missing from this list.
+    return [
+        s.id
+        for s in business.list_signals(limit=100, open_only=True, unprocessed_only=True)
+        if s.as_prompt_line() in shown
+    ]
+
+
+def _mark_processed(business: "BusinessService", signal_ids: list[str]) -> int:
+    """Bookkeeping must not discard work that already happened -- the actions
+    in this cycle ran whether or not the inbox can be updated."""
+    if not signal_ids:
+        return 0
+    try:
+        return business.mark_signals_processed(signal_ids)
+    except Exception:
+        logger.exception("could not mark %d signal(s) processed", len(signal_ids))
+        return 0
 
 
 def _count(results: list[ActionResult], outcome: ActionOutcome) -> int:

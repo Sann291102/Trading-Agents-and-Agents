@@ -13,7 +13,13 @@ founder's throttle (`AutonomySettings`); the judgement lives in
 than by importing app state, so a cycle can be driven in a test without
 standing up FastAPI.
 
-Two constraints shape the loop:
+There are two clocks, not one, because watching and thinking cost different
+things. Observation is a few reads and no model call, so it runs often;
+reasoning costs an LLM call per cycle, so it runs rarely. Splitting them is
+what lets JARVIS notice something within minutes while still thinking at
+whatever pace the founder is willing to pay for.
+
+Two constraints shape both loops:
   - A cycle does blocking work (SQLite + a synchronous LLM call), so it runs
     in a worker thread via `asyncio.to_thread`. Running it inline would stall
     the event loop serving the SSE stream, freezing the founder's live feed
@@ -27,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +46,7 @@ from aio.actions.base import ActionResult
 if TYPE_CHECKING:
     from aio.actions.base import ActionContext
     from aio.business.service import BusinessService
+    from aio.models.signals import Signal
 
 logger = logging.getLogger("aio.os.kernel")
 
@@ -55,6 +63,16 @@ class ExecutiveBrain:
         self._background_tasks: list[asyncio.Task] = []
         self._is_running = False
         self._cycles_run = 0
+        self._observations_run = 0
+        # Two clocks plus two "do it now" endpoints all dispatch into worker
+        # threads, so kernel-driven work would otherwise overlap. Recording a
+        # signal is a read-modify-write (find the open row for this dedupe
+        # key, else insert) with no unique constraint behind it, so two sweeps
+        # in flight at once write two rows for one condition and the dedupe
+        # invariant -- the thing that keeps a standing problem from burying
+        # the feed -- silently stops holding. Reentrant so a future caller
+        # that nests observing inside a cycle blocks nothing.
+        self._work_lock = threading.RLock()
 
     # -- wiring -----------------------------------------------------------
 
@@ -84,12 +102,29 @@ class ExecutiveBrain:
     def cycles_run(self) -> int:
         return self._cycles_run
 
+    @property
+    def observations_run(self) -> int:
+        return self._observations_run
+
     # -- settings ---------------------------------------------------------
 
     def get_settings(self) -> AutonomySettings:
         """A copy -- callers must go through `update_settings` so bounds are
         always re-validated."""
         return self._settings.model_copy()
+
+    def observe_interval_seconds(self) -> int:
+        """How often to look, which is not how often to think.
+
+        Read off the settings model with `getattr` rather than as an
+        attribute: the kernel owns startup, and a settings model that predates
+        this field must degrade to watching on the reasoning clock instead of
+        taking the whole API down with an AttributeError.
+        """
+        interval = getattr(self._settings, "observe_interval_seconds", None)
+        if not isinstance(interval, int) or interval < 1:
+            return self._settings.interval_seconds
+        return interval
 
     def update_settings(
         self, changes: "AutonomySettings | dict[str, Any] | None" = None, **kwargs: Any
@@ -129,20 +164,27 @@ class ExecutiveBrain:
         if self._is_running:
             return
         try:
-            task = asyncio.create_task(self._autonomy_loop())
+            tasks = [
+                asyncio.create_task(self._autonomy_loop()),
+                asyncio.create_task(self._observation_loop()),
+            ]
         except RuntimeError:
             # No running loop (imported by a script or a sync test). The
-            # kernel stays usable via run_once(); it just has no clock.
+            # kernel stays usable via run_once()/observe_once(); it just has
+            # no clock.
             logger.warning("no running event loop -- autonomy loop not started")
             return
         self._is_running = True
-        self._background_tasks.append(task)
+        self._background_tasks.extend(tasks)
         event_bus.publish(
             OrgEvent(
                 type="os_started",
                 agent_role="JARVIS",
                 message="Executive Brain online -- autonomous cycle scheduled.",
-                payload=self._settings.model_dump(),
+                payload={
+                    **self._settings.model_dump(),
+                    "observe_interval_seconds": self.observe_interval_seconds(),
+                },
             )
         )
 
@@ -185,26 +227,84 @@ class ExecutiveBrain:
                     )
                 )
 
-    def run_once(self) -> list[ActionResult]:
+    async def _observation_loop(self) -> None:
+        """The cheap clock. Same shape as the autonomy loop, no LLM call.
+
+        Gated on `enabled` like the reasoning loop: observing is passive, but
+        it writes rows and fills the founder's feed, and "autonomy off" has to
+        mean JARVIS does nothing unprompted.
+        """
+        while self._is_running:
+            await asyncio.sleep(max(1, self.observe_interval_seconds()))
+            if not self._is_running or not self._settings.enabled:
+                continue
+            try:
+                await asyncio.to_thread(self._observe_blocking)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("observation cycle failed")
+                event_bus.publish(
+                    OrgEvent(
+                        type="action_failed",
+                        agent_role="JARVIS",
+                        message=f"Observation cycle failed: {exc}",
+                        payload={"error": str(exc)},
+                    )
+                )
+
+    def run_once(self, *, observe: bool = True) -> list[ActionResult]:
         """Run one cycle immediately, ignoring `enabled` -- this is the
         founder asking for it explicitly, not JARVIS acting on its own.
 
         Returns what the cycle actually did so a "run now" request can show
         it. Blocking: call it from a worker thread, never the event loop.
         """
-        return self._run_cycle_blocking()
+        return self._run_cycle_blocking(observe=observe)
 
-    def _run_cycle_blocking(self) -> list[ActionResult]:
+    def observe_once(self) -> list["Signal"]:
+        """Look now, without thinking: one observation sweep, no LLM call.
+
+        Exists so the product can offer a "check on things" that costs
+        nothing, and so a founder with autonomy switched off can still ask
+        what JARVIS can see. Returns the newly-observed signals. Blocking.
+        """
+        return self._observe_blocking()
+
+    def _run_cycle_blocking(self, *, observe: bool = True) -> list[ActionResult]:
         if self._business_factory is None or self._context_factory is None:
             logger.warning("autonomy cycle skipped -- kernel not configured")
             return []
-        results = run_cycle(
-            self._business_factory(),
-            context_factory=self._context_factory,
-            limit=self._settings.max_actions_per_cycle,
-        )
-        self._cycles_run += 1
+        # Observes again even though the cheap loop may have looked recently:
+        # a plan should be made against the world as of now, not as of up to
+        # one observation interval ago.
+        with self._work_lock:
+            results = run_cycle(
+                self._business_factory(),
+                context_factory=self._context_factory,
+                limit=self._settings.max_actions_per_cycle,
+                observe=observe,
+            )
+            self._cycles_run += 1
         return results
+
+    def _observe_blocking(self) -> list["Signal"]:
+        if self._business_factory is None:
+            logger.warning("observation skipped -- kernel not configured")
+            return []
+        try:
+            from aio.observers.cycle import run_observation_cycle
+        except ImportError:
+            # The kernel must boot on an install without the observers
+            # package; it simply has nothing to watch with.
+            logger.warning("observers unavailable -- nothing to watch")
+            return []
+        # Waits rather than skips: a sweep is short, and a dropped one is a
+        # window in which JARVIS is not watching.
+        with self._work_lock:
+            signals = run_observation_cycle(self._business_factory())
+            self._observations_run += 1
+        return signals
 
 
 # Module-level singleton: api/main.py's lifespan reaches the kernel through
